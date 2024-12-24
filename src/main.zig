@@ -1,4 +1,5 @@
 const std = @import("std");
+const ZigRocksError = @import("rocksdb").ZigRocksError;
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);

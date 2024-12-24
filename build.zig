@@ -83,13 +83,13 @@ pub fn build(b: *std.Build) void {
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
     const rocksdb_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/Rocksdb.zig"),
+        .root_source_file = b.path("src/rocksdb.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     rocksdb_unit_tests.linkLibC();
-    rocksdb_unit_tests.addIncludePath(std.Build.LazyPath{ .cwd_relative = "./include" });
+    rocksdb_unit_tests.addIncludePath(std.Build.LazyPath{ .cwd_relative = "./opt/homebrew/include" });
     rocksdb_unit_tests.linkSystemLibrary("rocksdb");
     rocksdb_unit_tests.addLibraryPath(std.Build.LazyPath{ .cwd_relative = "/opt/homebrew/lib" });
     const run_rocksdb_unit_tests = b.addRunArtifact(rocksdb_unit_tests);
