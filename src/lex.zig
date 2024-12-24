@@ -57,8 +57,9 @@ pub const Token = struct {
     kind: Kind,
     source: []const u8,
 
-    pub fn init(start: u64, end: u64, kind: Kind, source: []const u8) @This() {
-        const Self = @This();
+    const Self = @This();
+
+    pub fn init(start: u64, end: u64, kind: Kind, source: []const u8) Self {
         return Self{
             .start = start,
             .end = end,
@@ -66,19 +67,21 @@ pub const Token = struct {
             .source = source,
         };
     }
-    pub fn getKind(self: @This()) Kind {
+    pub fn getKind(self: Self) Kind {
         return self.kind;
     }
-    pub fn string(self: @This()) []const u8 {
+    pub fn string(self: Self) []const u8 {
         return self.source[self.start..self.end];
     }
 };
 
-pub const LexIterator = struct {
+pub const Lex = struct {
     index: u64,
     source: []const u8,
 
-    fn nextKeyword(self: *LexIterator) ?Token {
+    const Self = @This();
+
+    fn nextKeyword(self: *Self) ?Token {
         var longest_len: usize = 0;
         var kind = Token.Kind.unknown;
         for (BUILTINS) |builtin| {
@@ -99,7 +102,7 @@ pub const LexIterator = struct {
         return Token.init(self.index, self.index + longest_len, kind, self.source);
     }
 
-    fn nextInteger(self: *LexIterator) ?Token {
+    fn nextInteger(self: *Self) ?Token {
         var end = self.index;
         var i = self.index;
         while (i < self.source.len and self.source[i] >= '0' and self.source[i] <= '9') {
@@ -111,7 +114,7 @@ pub const LexIterator = struct {
 
         return Token.init(self.index, end, Token.Kind.integer, self.source);
     }
-    fn nextString(self: *LexIterator) ?Token {
+    fn nextString(self: *Self) ?Token {
         var i = self.index;
         if (self.source[i] != '\'') return null;
         i += 1;
@@ -129,7 +132,7 @@ pub const LexIterator = struct {
         return Token.init(start, end, Token.Kind.string, self.source);
     }
 
-    fn nextIdentifier(self: *LexIterator) ?Token {
+    fn nextIdentifier(self: *Self) ?Token {
         var i = self.index;
         var end = self.index;
         while (i < self.source.len and ((self.source[i] >= 'a' and self.source[i] <= 'z') or (self.source[i] >= 'A' and self.source[i] <= 'Z') or self.source[i] == '*')) {
@@ -142,11 +145,11 @@ pub const LexIterator = struct {
         return Token.init(self.index, end, Token.Kind.identifier, self.source);
     }
 
-    pub fn hasNext(self: *LexIterator) bool {
+    pub fn hasNext(self: *Self) bool {
         self.index = eatWhitespace(self.source, self.index);
         return self.index < self.source.len;
     }
-    pub fn next(self: *LexIterator) !Token {
+    pub fn next(self: *Self) !Token {
         // std.debug.print("index: {d}, len: {d}, src: {s}\n", .{ self.index, self.source.len, self.source[self.index..] });
         self.index = eatWhitespace(self.source, self.index);
         if (self.index >= self.source.len) return error.OutOfSource;
@@ -164,13 +167,29 @@ pub const LexIterator = struct {
         }
         return error.BadToken;
     }
+
+    pub fn init(source: []const u8) Self {
+        return Self{
+            .source = source,
+            .index = 0,
+        };
+    }
 };
 
 fn eatWhitespace(source: []const u8, index: u64) u64 {
-    while (index < source.len and (source[index] == '\r' or source[index] == '\n' or source[index] == ' ')) {
-        index += 1;
+    var res = index;
+    while (source[res] == ' ' or
+        source[res] == '\n' or
+        source[res] == '\t' or
+        source[res] == '\r')
+    {
+        res = res + 1;
+        if (res == source.len) {
+            break;
+        }
     }
-    return index;
+
+    return res;
 }
 
 fn asciiCaseInsensitiveEqual(actual: []const u8, expected: []const u8) bool {
@@ -188,3 +207,25 @@ fn asciiCaseInsensitiveEqual(actual: []const u8, expected: []const u8) bool {
     }
     return false;
 }
+
+// fn asciiCaseInsensitiveEqual(left: String, right: String) bool {
+//     var min = left;
+//     if (right.len < left.len) {
+//         min = right;
+//     }
+
+//     for (min) |_, i| {
+//         var l = left[i];
+//         if (l >= 97 and l <= 122) {
+//             l = l - 32;
+//         }
+
+//         var r = right[i];
+//         if (r >= 97 and r <= 122) {
+//             r = r - 32;
+//         }
+
+//         if (l != r) {
+//             return false;
+//         }
+//     }

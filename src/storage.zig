@@ -1,5 +1,130 @@
 const std = @import("std");
-const rocksdb = @import("rocksdb");
+const kv = @import("kv.zig");
+const KV = @import("kv.zig").KV;
+
+pub const Value = union(enum) {
+    bool_value: bool,
+    null_value: bool,
+    string_value: []const u8,
+    integer_value: i64,
+
+    pub const TRUE = Value{ .bool_value = true };
+    pub const FALSE = Value{ .bool_value = false };
+    pub const NULL = Value{ .null_value = true };
+
+    pub fn fromIntegerString(iBytes: []const u8) Value {
+        const i = std.fmt.parseInt(i64, iBytes, 10) catch return Value{
+            .integer_value = 0,
+        };
+        return Value{ .integer_value = i };
+    }
+
+    pub fn asBool(self: Value) bool {
+        return switch (self) {
+            .null_value => false,
+            .bool_value => |value| value,
+            .string_value => |value| value.len > 0,
+            .integer_value => |value| value != 0,
+        };
+    }
+
+    pub fn asString(self: Value, buf: *std.ArrayList(u8)) !void {
+        try switch (self) {
+            .null_value => _ = 1, // Do nothing
+            .bool_value => |value| buf.appendSlice(if (value) "true" else "false"),
+            .string_value => |value| buf.appendSlice(value),
+            .integer_value => |value| buf.writer().print("{d}", .{value}),
+        };
+    }
+
+    pub fn asInteger(self: Value) i64 {
+        return switch (self) {
+            .null_value => 0,
+            .bool_value => |value| if (value) 1 else 0,
+            .string_value => |value| fromIntegerString(value).integer_value,
+            .integer_value => |value| value,
+        };
+    }
+
+    pub fn serialize(self: Value, buf: *std.ArrayList(u8)) !void {
+        switch (self) {
+            .null_value => return buf.append('0'),
+            .bool_value => |v| {
+                try buf.append('1');
+                return buf.append(if (v) '1' else '0');
+            },
+            .string_value => |v| {
+                try buf.append('2');
+                return buf.appendSlice(v);
+            },
+            .integer_value => |v| {
+                try buf.append('3');
+                var b2: [8]u8 = undefined;
+                serializeInteger(i64, v, &b2);
+                return buf.appendSlice(b2[0..]);
+            },
+        }
+    }
+
+    pub fn deserialize(buf: []const u8) Value {
+        if (buf.len == 0) {
+            unreachable;
+        }
+        switch (buf[0]) {
+            '0' => return Value{ .null_value = true },
+            '1' => {
+                if (buf[1] == '1') {
+                    return Value{ .bool_value = true };
+                } else {
+                    return Value{ .bool_value = false };
+                }
+            },
+            '2' => return .{ .string_value = buf[1..] },
+            '3' => {
+                return Value{ .integer_value = deserializeInteger(i64, buf[1..]) };
+            },
+            else => unreachable,
+        }
+    }
+};
+
+fn serializeInteger(comptime T: type, i: T, buf: *[@sizeOf(T)]u8) void {
+    std.mem.writeInt(T, buf, i, .big);
+}
+fn deserializeInteger(comptime T: type, buf: []const u8) T {
+    return std.mem.readInt(T, buf[0..@sizeOf(T)], .big);
+}
+
+// [length: 4bytes][bytes]
+pub fn serializeBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    var h: [4]u8 = undefined;
+    serializeInteger(u32, @intCast(bytes.len), &h);
+    const parts = [_][]const u8{ &h, bytes };
+    return std.mem.concat(allocator, u8, &parts);
+}
+
+pub fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
+    const length = deserializeInteger(u32, bytes);
+    const offset = length + 4;
+    buf.* = bytes[4..offset];
+    return offset;
+}
+
+pub const StorageError = enum {
+    TableNotFound,
+};
+
+pub const Storage = struct {
+    db: KV,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, db: KV) Storage {
+        return Storage{
+            .db = db,
+            .allocator = allocator,
+        };
+    }
+};
 
 pub const Table = struct {
     name: []const u8,
@@ -82,14 +207,14 @@ pub const Row = struct {
 
 const RowIter = struct {
     const Self = @This();
-    iter: rocksdb.Iter,
+    iter: kv.Iter,
     row_prefix: []const u8,
     allocator: std.mem.Allocator,
     table: Table,
 
     fn init(
         allocator: std.mem.Allocator,
-        db: Rocksdb,
+        db: KV,
         row_prefix: []const u8,
         table: Table,
     ) !Self {
@@ -119,70 +244,9 @@ const RowIter = struct {
         var offset: usize = 0;
         while (offset < b.len) {
             var buf: []const u8 = undefined;
-            offset += value.deserializeBytes(b[offset..], &buf);
+            offset += deserializeBytes(b[offset..], &buf);
             try row.append(Value.deserialize(buf));
         }
         return row;
     }
 };
-
-fn serializeInteger(comptime T: type, i: T, buf: *[@sizeOf(T)]u8) void {
-    std.mem.writeInt(T, buf, i, .big);
-}
-fn deserializeInteger(comptime T: type, buf: []const u8) T {
-    return std.mem.readInt(T, buf[0..@sizeOf(T)], .big);
-}
-
-// [length: 4bytes][bytes]
-pub fn serializeBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
-    var h: [4]u8 = undefined;
-    serializeInteger(u32, @intCast(bytes.len), &h);
-    const parts = [_][]const u8{ &h, bytes };
-    return std.mem.concat(allocator, u8, &parts);
-}
-
-pub fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
-    const length = deserializeInteger(u32, bytes);
-    const offset = length + 4;
-    buf.* = bytes[4..offset];
-    return offset;
-}
-pub fn serialize(self: Value, buf: *std.ArrayList(u8)) !void {
-    switch (self) {
-        .null_value => return buf.append('0'),
-        .bool_value => |v| {
-            try buf.append('1');
-            return buf.append(if (v) '1' else '0');
-        },
-        .string_value => |v| {
-            try buf.append('2');
-            return buf.appendSlice(v);
-        },
-        .integer_value => |v| {
-            try buf.append('3');
-            var b2: [8]u8 = undefined;
-            serializeInteger(i64, v, &b2);
-            return buf.appendSlice(b2[0..]);
-        },
-    }
-}
-pub fn deserialize(buf: []const u8) Value {
-    if (buf.len == 0) {
-        unreachable;
-    }
-    switch (buf[0]) {
-        '0' => return Value{ .null_value = true },
-        '1' => {
-            if (buf[1] == '1') {
-                return Value{ .bool_value = true };
-            } else {
-                return Value{ .bool_value = false };
-            }
-        },
-        '2' => return .{ .string_value = buf[1..] },
-        '3' => {
-            return Value{ .integer_value = deserializeInteger(i64, buf[1..]) };
-        },
-        else => unreachable,
-    }
-}

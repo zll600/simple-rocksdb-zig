@@ -1,5 +1,12 @@
 const std = @import("std");
-const ZigRocksError = @import("rocksdb").ZigRocksError;
+const Lex = @import("lex.zig").Lex;
+const Parser = @import("parser.zig").Parser;
+const Storage = @import("storage.zig").Storage;
+const Executor = @import("executor.zig").Executor;
+
+pub const ZigRocksError = error{
+    InvalidArgument,
+};
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -39,21 +46,22 @@ pub fn main() !void {
     _ = try script_file.readAll(script_buffer);
 
     // lex SQL script
-    const tokens = try Lexer.init(script_buffer).lex(allocator);
+    const tokens = Lex.init(script_buffer);
     defer allocator.free(tokens);
     if (tokens.len == 0) {
         std.log.err("No tokens found", .{});
         return ZigRocksError.InvalidArgument;
     }
+
     // parse SQL script
     const ast = try Parser.init(allocator).parse(tokens);
 
     // init rocksdb
-    const db = try Rocksdb.init(allocator, database_path);
+    const db = try Storage.init(allocator, database_path);
     defer db.deinit();
 
     // execute AST
-    const executer = Executer.init(allocator, db);
+    const executer = Executor.init(allocator, db);
     var resp = try executer.execute(ast);
     defer resp.deinit();
     // for `create table` and `insert` SQL, we print OK

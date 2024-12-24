@@ -1,6 +1,6 @@
+const std = @import("std");
 const Token = @import("lex.zig").Token;
 const ast = @import("ast.zig");
-const std = @import("std");
 
 pub const ParserError = enum {
     InvalidStatement,
@@ -9,8 +9,23 @@ pub const ParserError = enum {
 };
 
 pub const Parser = struct {
+    allocator: std.mem.Allocator,
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator) Parser {
+        return Parser{ .allocator = allocator };
+    }
+
+    fn expectTokenKind(tokens: []Token, index: usize, kind: Token.Kind) bool {
+        if (index >= tokens.len) {
+            return false;
+        }
+
+        return tokens[index].kind == kind;
+    }
+
     fn parseExpression(
-        self: @This(),
+        self: Self,
         tokens: []Token,
         index: *usize,
     ) !ast.ExpressionAST {
@@ -76,7 +91,7 @@ pub const Parser = struct {
     }
 
     fn parseSelect(
-        self: @This(),
+        self: Self,
         tokens: []Token,
     ) !ast.SelectAST {
         var i: usize = 0; // expect select keyword
@@ -133,7 +148,7 @@ pub const Parser = struct {
         return select;
     }
 
-    fn parseCreateTable(self: @This(), tokens: []Token) !ast.CreateTableAST {
+    fn parseCreateTable(self: Self, tokens: []Token) !ast.CreateTableAST {
         var i: usize = 0;
 
         // create table
@@ -190,7 +205,7 @@ pub const Parser = struct {
         return create_table_ast;
     }
 
-    fn parseInsert(self: @This(), tokens: []Token) !ast.InsertAST {
+    fn parseInsert(self: Self, tokens: []Token) !ast.InsertAST {
         var i: usize = 0;
 
         // insert into
