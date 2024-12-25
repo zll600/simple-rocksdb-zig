@@ -1,5 +1,5 @@
 const std = @import("std");
-const ast = @import("ast");
+const ast = @import("ast.zig");
 const Table = @import("storage.zig").Table;
 const Row = @import("storage.zig").Row;
 const RowIter = @import("storage.zig").RowIter;
@@ -22,6 +22,14 @@ pub const Executor = struct {
 
     pub fn init(allocator: std.mem.Allocator, storage_instance: Storage) Executor {
         return Executor{ .allocator = allocator, .storage = storage_instance };
+    }
+
+    pub fn execute(self: Executor, ast_tree: ast.AST) QueryResponse {
+        return switch (ast_tree) {
+            .select => |select| self.executeSelect(select),
+            .insert => |insert| self.executeInsert(insert),
+            .create_table => |create_table| self.executeCreateTable(create_table),
+        };
     }
 
     // @spec serialize(int | string | bool) -> bytes // alias s/1
@@ -336,7 +344,7 @@ pub const Executor = struct {
 
 pub const QueryResponse = struct {
     rows: []const []const u8,
-    fields: []const u8,
+    fields: []const []const u8,
     allocator: std.mem.Allocator,
 };
 

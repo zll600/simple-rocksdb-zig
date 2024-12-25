@@ -14,7 +14,7 @@ pub const KV = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, dir: []const u8) !Self {
+    pub fn init(allocator: std.mem.Allocator, dir: []const u8) Self {
         const options: ?*rdb.rocksdb_options_t = rdb.rocksdb_options_create();
         rdb.rocksdb_options_set_create_if_missing(options, 1);
 

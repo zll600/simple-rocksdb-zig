@@ -2,6 +2,7 @@ const std = @import("std");
 const lex = @import("lex.zig");
 const Lex = @import("lex.zig").Lex;
 const Parser = @import("parser.zig").Parser;
+const KV = @import("kv.zig").KV;
 const Storage = @import("storage.zig").Storage;
 const Executor = @import("executor.zig").Executor;
 
@@ -67,13 +68,15 @@ pub fn main() !void {
     const ast = Parser.init(allocator).parse(tokens);
 
     // init rocksdb
-    const db = Storage.init(allocator, database_path);
-    defer db.deinit();
+    var kv: KV = KV.init(allocator, database_path);
+    defer kv.deinit();
+
+    // init rocksdb
+    const db = Storage.init(allocator, kv);
 
     // execute AST
     const executer = Executor.init(allocator, db);
-    var resp = try executer.execute(ast);
-    defer resp.deinit();
+    const resp = executer.execute(ast);
     // for `create table` and `insert` SQL, we print OK
     if (resp.rows.len == 0) {
         try stdout.print("OK\n", .{});
