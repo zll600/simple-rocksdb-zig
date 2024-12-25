@@ -1,5 +1,6 @@
 const std = @import("std");
 const Token = @import("lex.zig").Token;
+const Kind = @import("lex.zig").Kind;
 const ast = @import("ast.zig");
 
 pub const ParserError = enum {
@@ -16,7 +17,7 @@ pub const Parser = struct {
         return Parser{ .allocator = allocator };
     }
 
-    fn expectTokenKind(tokens: []Token, index: usize, kind: Token.Kind) bool {
+    fn expectTokenKind(tokens: []Token, index: usize, kind: Kind) bool {
         if (index >= tokens.len) {
             return false;
         }
@@ -255,5 +256,30 @@ pub const Parser = struct {
 
         insert_ast.values = try values.toOwnedSlice();
         return insert_ast;
+    }
+
+    pub fn parse(self: Self, tokens: []Token) ast.AST {
+        if (expectTokenKind(tokens, 0, Kind.select_keyword)) {
+            return switch (self.parseSelect(tokens)) {
+                .err => |err| .{ .err = err },
+                .val => |val| .{ .val = val },
+            };
+        }
+
+        if (expectTokenKind(tokens, 0, Kind.create_table_keyword)) {
+            return switch (self.parseCreateTable(tokens)) {
+                .err => |err| .{ .err = err },
+                .val => |val| .{ .val = val },
+            };
+        }
+
+        if (expectTokenKind(tokens, 0, Kind.insert_keyword)) {
+            return switch (self.parseInsert(tokens)) {
+                .err => |err| .{ .err = err },
+                .val => |val| .{ .val = val },
+            };
+        }
+
+        return .{ .err = "Unknown statement" };
     }
 };

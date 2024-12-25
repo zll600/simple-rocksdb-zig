@@ -1,10 +1,11 @@
 const std = @import("std");
+const lex = @import("lex.zig");
 const Lex = @import("lex.zig").Lex;
 const Parser = @import("parser.zig").Parser;
 const Storage = @import("storage.zig").Storage;
 const Executor = @import("executor.zig").Executor;
 
-pub const ZigRocksError = error{
+pub const DBError = error{
     InvalidArgument,
 };
 
@@ -20,44 +21,53 @@ pub fn main() !void {
 
     var database_path: []const u8 = undefined;
     var script: []const u8 = undefined;
+    var debugTokens = false;
+    var debugAST = false;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--database")) {
-            database_path = args.next().?; // database
+            database_path = args.next().?;
         } else if (std.mem.eql(u8, arg, "--script")) {
-            script = args.next().?; // script
+            script = args.next().?;
+        } else if (std.mem.eql(u8, arg, "--debug-tokens")) {
+            debugTokens = true;
+        } else if (std.mem.eql(u8, arg, "--debug-ast")) {
+            debugAST = true;
         }
     }
 
     if (database_path.len == 0) {
         std.log.err("No database specified", .{});
-        return ZigRocksError.InvalidArgument;
+        return;
     }
     if (script.len == 0) {
         std.log.err("No script specified", .{});
-        return ZigRocksError.InvalidArgument;
+        return;
     }
 
     // read script
     const script_file = try std.fs.cwd().openFile(script, .{});
     defer script_file.close();
+
     const file_size = try script_file.getEndPos();
     const script_buffer = try allocator.alloc(u8, file_size);
     defer allocator.free(script_buffer);
+
     _ = try script_file.readAll(script_buffer);
 
     // lex SQL script
-    const tokens = Lex.init(script_buffer);
+    const tokens = Lex.init(script_buffer).lex(allocator);
+    // var tokens = std.ArrayList(lex.Token).init(allocator);
     defer allocator.free(tokens);
     if (tokens.len == 0) {
         std.log.err("No tokens found", .{});
-        return ZigRocksError.InvalidArgument;
+        return;
     }
 
     // parse SQL script
-    const ast = try Parser.init(allocator).parse(tokens);
+    const ast = Parser.init(allocator).parse(tokens);
 
     // init rocksdb
-    const db = try Storage.init(allocator, database_path);
+    const db = Storage.init(allocator, database_path);
     defer db.deinit();
 
     // execute AST

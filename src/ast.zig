@@ -1,6 +1,20 @@
 const std = @import("std");
 const Token = @import("lex.zig");
 
+pub const AST = union(enum) {
+    select: SelectAST,
+    insert: InsertAST,
+    create_table: CreateTableAST,
+
+    pub fn print(self: AST) void {
+        switch (self) {
+            .select => |select| select.print(),
+            .insert => |insert| insert.print(),
+            .create_table => |create_table| create_table.print(),
+        }
+    }
+};
+
 pub const ExpressionAST = union(enum) {
     literal: Token, // 字面逻辑
     binary_operation: BinaryOperationAST, // 计算逻辑
@@ -120,7 +134,7 @@ pub const InsertAST = struct {
     }
 };
 
-fn isExpectTokenKind(tokens: []Token, index: usize, kind: Token.Kind) bool {
+pub fn isExpectTokenKind(tokens: []Token, index: usize, kind: Token.Kind) bool {
     if (index >= tokens.len) {
         return false;
     }

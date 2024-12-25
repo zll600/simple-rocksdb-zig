@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const Kind = enum {
     unknown,
 
@@ -173,6 +175,15 @@ pub const Lex = struct {
             .source = source,
             .index = 0,
         };
+    }
+
+    pub fn lex(self: Self, allocator: std.mem.Allocator) []Token {
+        var tokens = std.ArrayList(Token).init(allocator);
+        while (true) {
+            const token = try self.next();
+            tokens.addOne(token);
+        }
+        return tokens;
     }
 };
 

@@ -26,10 +26,12 @@ pub fn build(b: *std.Build) void {
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
     b.installArtifact(exe);
-    exe.linkLibC();
-    exe.addIncludePath(std.Build.LazyPath{ .cwd_relative = "./opt/homebrew/include" });
-    exe.linkSystemLibrary("rocksdb");
+    exe.linkLibCpp();
+    // exe.addIncludePath(std.Build.LazyPath{ .cwd_relative = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include" });
+    // exe.addIncludePath(std.Build.LazyPath{ .cwd_relative = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1" });
+    exe.addIncludePath(std.Build.LazyPath{ .cwd_relative = "/opt/homebrew/include" });
     exe.addLibraryPath(std.Build.LazyPath{ .cwd_relative = "/opt/homebrew/lib" });
+    exe.linkSystemLibrary("rocksdb");
 
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish

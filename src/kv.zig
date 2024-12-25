@@ -1,5 +1,5 @@
 const std = @import("std");
-const rdb = @cImport(@cInclude("rocksdb.h"));
+const rdb = @cImport(@cInclude("rocksdb/c.h"));
 
 pub const KVError = enum {
     OpenError,
