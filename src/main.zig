@@ -65,10 +65,10 @@ pub fn main() !void {
     }
 
     // parse SQL script
-    const ast = Parser.init(allocator).parse(tokens);
+    const ast = try Parser.init(allocator).parse(tokens);
 
     // init rocksdb
-    var kv: KV = KV.init(allocator, database_path);
+    var kv: KV = try KV.init(allocator, database_path);
     defer kv.deinit();
 
     // init rocksdb
@@ -76,7 +76,7 @@ pub fn main() !void {
 
     // execute AST
     const executer = Executor.init(allocator, db);
-    const resp = executer.execute(ast);
+    const resp = try executer.execute(ast);
     // for `create table` and `insert` SQL, we print OK
     if (resp.rows.len == 0) {
         try stdout.print("OK\n", .{});

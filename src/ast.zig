@@ -1,10 +1,11 @@
 const std = @import("std");
-const Token = @import("lex.zig");
+const Token = @import("lex.zig").Token;
+const Kind = @import("lex.zig").Kind;
 
 pub const AST = union(enum) {
-    select: SelectAST,
-    insert: InsertAST,
-    create_table: CreateTableAST,
+    select_ast: SelectAST,
+    insert_ast: InsertAST,
+    create_table_ast: CreateTableAST,
 
     pub fn print(self: AST) void {
         switch (self) {
@@ -134,7 +135,7 @@ pub const InsertAST = struct {
     }
 };
 
-pub fn isExpectTokenKind(tokens: []Token, index: usize, kind: Token.Kind) bool {
+pub fn isExpectTokenKind(tokens: []Token, index: usize, kind: Kind) bool {
     if (index >= tokens.len) {
         return false;
     }

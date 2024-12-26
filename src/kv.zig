@@ -1,7 +1,7 @@
 const std = @import("std");
 const rdb = @cImport(@cInclude("rocksdb/c.h"));
 
-pub const KVError = enum {
+pub const KVError = error{
     OpenError,
     WriteError,
     ReadError,
@@ -14,14 +14,14 @@ pub const KV = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, dir: []const u8) Self {
+    pub fn init(allocator: std.mem.Allocator, dir: []const u8) !Self {
         const options: ?*rdb.rocksdb_options_t = rdb.rocksdb_options_create();
         rdb.rocksdb_options_set_create_if_missing(options, 1);
 
         var err: ?[*:0]u8 = null;
         const db = rdb.rocksdb_open(options, dir.ptr, &err);
 
-        const r = Self{
+        const kv = Self{
             .db = db.?,
             .allocator = allocator,
             .dir = dir,
@@ -31,7 +31,7 @@ pub const KV = struct {
             std.log.err("Failed to open RocksDB: {s}.\n", .{errStr});
             return KVError.OpenError;
         }
-        return r;
+        return kv;
     }
 
     pub fn deinit(self: Self) void {

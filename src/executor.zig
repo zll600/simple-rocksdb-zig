@@ -10,25 +10,32 @@ const StorageError = @import("storage.zig").StorageError;
 const serializeBytes = @import("storage.zig").serializeBytes;
 const deserializeBytes = @import("storage.zig").deserializeBytes;
 
-pub const ExecuteError = enum {
+pub const ExecuteError = error{
     TableAlreadyExists,
     TableNotFound,
 };
 
 pub const Executor = struct {
-    allocator: std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
+    storage: Storage,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, storage_instance: Storage) Executor {
+    pub fn init(allocator: std.mem.Allocator, storage_instance: Storage) Self {
         return Executor{ .allocator = allocator, .storage = storage_instance };
     }
 
-    pub fn execute(self: Executor, ast_tree: ast.AST) QueryResponse {
+    pub fn execute(self: Executor, ast_tree: ast.AST) !QueryResponse {
         return switch (ast_tree) {
-            .select => |select| self.executeSelect(select),
-            .insert => |insert| self.executeInsert(insert),
-            .create_table => |create_table| self.executeCreateTable(create_table),
+            .select_ast => |select| try self.executeSelect(select),
+            .insert_ast => |insert| switch (self.executeInsert(insert)) {
+                .val => |val| val,
+                .err => |err| err,
+            },
+            .create_table_ast => |create_table| switch (self.executeCreateTable(create_table)) {
+                .val => |val| val,
+                .err => |err| err,
+            },
         };
     }
 
@@ -254,7 +261,8 @@ pub const Executor = struct {
     }
 
     fn executeSelect(self: Self, select: ast.SelectAST) !QueryResponse {
-        const table_name = select.getTableName();
+        const table_name = self.storage.getTableName();
+
         // select x, y
         var select_fields = std.ArrayList([]const u8).init(self.allocator);
         for (select.columns) |column| {

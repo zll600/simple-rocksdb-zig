@@ -112,6 +112,7 @@ pub fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
 
 pub const StorageError = enum {
     TableNotFound,
+    WriteTableKeyError,
 };
 
 pub const Storage = struct {
@@ -124,38 +125,46 @@ pub const Storage = struct {
             .allocator = allocator,
         };
     }
+
+    pub fn writeTable(self: Self, table: Table) ?StorageError {
+        // Table name prefix
+        var key = std.ArrayList(u8).init(self.allocator);
+        switch (key.writer().print("tbl_{s}_", .{table.name})){
+            .err => {
+                std.log.info("Could not allocate key for table", .{});
+            }
+        }
+
+        var value = std.ArrayList(u8).init(self.allocator);
+        for (table.columns) |column, i| {
+            serializeBytes(&value, column) catch return "Could not allocate for column";
+            serializeBytes(&value, table.types[i]) catch return "Could not allocate for column type";
+        }
+
+        return self.db.set(key.items, value.items);
+    }
+
 };
 
 pub const Table = struct {
     name: []const u8,
     columns: []const []const u8,
     types: []const []const u8,
-    allocator: std.mem.Allocator,
+
+    const Self = @This();
 
     pub fn init(
-        allocator: std.mem.Allocator,
         name: []const u8,
         columns: []const []const u8,
         types: []const []const u8,
-    ) Table {
-        return Table{
+    ) Self {
+        return Self{
             .name = name,
             .columns = columns,
             .types = types,
-            .allocator = allocator,
         };
     }
 
-    pub fn deinit(self: Table) void {
-        for (self.columns, 0..) |_, i| {
-            self.allocator.free(self.columns[i]);
-        }
-        self.allocator.free(self.columns);
-        for (self.types, 0..) |_, i| {
-            self.allocator.free(self.types[i]);
-        }
-        self.allocator.free(self.types);
-    }
 };
 
 pub const Row = struct {

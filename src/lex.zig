@@ -69,9 +69,11 @@ pub const Token = struct {
             .source = source,
         };
     }
+
     pub fn getKind(self: Self) Kind {
         return self.kind;
     }
+
     pub fn string(self: Self) []const u8 {
         return self.source[self.start..self.end];
     }
@@ -151,8 +153,8 @@ pub const Lex = struct {
         self.index = eatWhitespace(self.source, self.index);
         return self.index < self.source.len;
     }
-    pub fn next(self: *Self) !Token {
-        // std.debug.print("index: {d}, len: {d}, src: {s}\n", .{ self.index, self.source.len, self.source[self.index..] });
+    pub fn next(self: Self) Token {
+        std.debug.print("index: {d}, len: {d}, src: {s}\n", .{ self.index, self.source.len, self.source[self.index..] });
         self.index = eatWhitespace(self.source, self.index);
         if (self.index >= self.source.len) return error.OutOfSource;
         if (self.nextKeyword()) |token| {
@@ -167,7 +169,10 @@ pub const Lex = struct {
         if (self.nextIdentifier()) |token| {
             return token;
         }
-        return error.BadToken;
+        return Token{
+            .start = 0,
+            .end = 0,
+        };
     }
 
     pub fn init(source: []const u8) Self {
@@ -180,8 +185,10 @@ pub const Lex = struct {
     pub fn lex(self: Self, allocator: std.mem.Allocator) []Token {
         var tokens = std.ArrayList(Token).init(allocator);
         while (true) {
-            const token = try self.next();
-            tokens.addOne(token);
+            const token = self.next();
+            if (token.start == 0 and token.end == 0) {
+                tokens.append(token) catch |err| std.debug.print("fail to append token to tokens array with %s", err);
+            }
         }
         return tokens;
     }
