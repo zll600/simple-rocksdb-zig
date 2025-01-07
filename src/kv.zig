@@ -56,7 +56,7 @@ pub const KV = struct {
         }
     }
 
-    pub fn get(self: Self, key: []const u8, buf: *std.ArrayList(u8)) !void {
+    pub fn get(self: Self, key: []const u8) ![]u8 {
         const readOptions = rdb.rocksdb_readoptions_create();
         var value_length: usize = 0;
         var err: ?[*:0]u8 = null;
@@ -69,16 +69,21 @@ pub const KV = struct {
             &value_length,
             &err,
         );
-        if (v == null) {
-            return;
-        }
         if (err) |errStr| {
             std.log.err("Failed to read RocksDB: {s}.\n", .{errStr});
             return KVError.ReadError;
         }
-        for (0..value_length) |i| {
-            try buf.append(v[i]);
+        if (v == null) {
+            return;
         }
+        return self.copyDataFromRocksDB(v);
+    }
+
+    fn copyDataFromRocksDB(self: Self, data: []u8) []u8 {
+        const result = self.allocator.alloc(u8, data.len) catch unreachable;
+        std.mem.copy(u8, result, data);
+        std.heap.c_allocator.free(data);
+        return result;
     }
 
     pub fn getIter(self: Self, prefix: []const u8) !Iter {

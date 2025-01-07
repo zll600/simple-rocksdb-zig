@@ -110,7 +110,7 @@ pub fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
     return offset;
 }
 
-pub const StorageError = enum {
+pub const StorageError = error{
     TableNotFound,
     WriteTableKeyError,
 };
@@ -118,6 +118,8 @@ pub const StorageError = enum {
 pub const Storage = struct {
     db: KV,
     allocator: std.mem.Allocator,
+
+    const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, db: KV) Storage {
         return Storage{
@@ -129,14 +131,14 @@ pub const Storage = struct {
     pub fn writeTable(self: Self, table: Table) ?StorageError {
         // Table name prefix
         var key = std.ArrayList(u8).init(self.allocator);
-        switch (key.writer().print("tbl_{s}_", .{table.name})){
+        switch (key.writer().print("tbl_{s}_", .{table.name})) {
             .err => {
                 std.log.info("Could not allocate key for table", .{});
-            }
+            },
         }
 
         var value = std.ArrayList(u8).init(self.allocator);
-        for (table.columns) |column, i| {
+        for (table.columns, 0..) |column, i| {
             serializeBytes(&value, column) catch return "Could not allocate for column";
             serializeBytes(&value, table.types[i]) catch return "Could not allocate for column type";
         }
@@ -144,6 +146,42 @@ pub const Storage = struct {
         return self.db.set(key.items, value.items);
     }
 
+    pub fn getTable(self: Self, name: []const u8) !Table {
+        var tableKey = std.ArrayList(u8).init(self.allocator);
+        tableKey.writer().print("tbl_{s}_", .{name}) catch return .{
+            .err = "Could not allocate for table prefix",
+        };
+
+        var columns = std.ArrayList(u8).init(self.allocator);
+        var types = std.ArrayList(u8).init(self.allocator);
+        var table = Table{
+            .name = name,
+            .columns = undefined,
+            .types = undefined,
+        };
+        // First grab table info
+        var columnInfo = try self.db.get(tableKey.items);
+
+        var columnOffset: usize = 0;
+        while (columnOffset < columnInfo.len) {
+            var column = deserializeBytes(columnInfo[columnOffset..]);
+            columnOffset += column.offset;
+            columns.append(column.bytes) catch return .{
+                .err = "Could not allocate for column name.",
+            };
+
+            var kind = deserializeBytes(columnInfo[columnOffset..]);
+            columnOffset += kind.offset;
+            types.append(kind.bytes) catch return .{
+                .err = "Could not allocate for column kind.",
+            };
+        }
+
+        table.columns = columns.items;
+        table.types = types.items;
+
+        return .{ .val = table };
+    }
 };
 
 pub const Table = struct {
@@ -164,7 +202,6 @@ pub const Table = struct {
             .types = types,
         };
     }
-
 };
 
 pub const Row = struct {
