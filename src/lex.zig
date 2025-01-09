@@ -33,24 +33,25 @@ pub const Kind = enum {
 
 pub const Builtin = struct {
     name: []const u8,
-    Kind: Kind,
+    kind: Kind,
 };
 
+// sorting by length of keyword.
 const BUILTINS = [_]Builtin{
-    .{ .name = "CREATE TABLE", .Kind = Token.Kind.create_table_keyword },
-    .{ .name = "INSERT INTO", .Kind = Token.Kind.insert_keyword },
-    .{ .name = "SELECT", .Kind = Token.Kind.select_keyword },
-    .{ .name = "VALUES", .Kind = Token.Kind.values_keyword },
-    .{ .name = "WHERE", .Kind = Token.Kind.where_keyword },
-    .{ .name = "FROM", .Kind = Token.Kind.from_keyword },
-    .{ .name = "||", .Kind = Token.Kind.concat_operator },
-    .{ .name = "=", .Kind = Token.Kind.equal_operator },
-    .{ .name = "+", .Kind = Token.Kind.plus_operator },
-    .{ .name = "<", .Kind = Token.Kind.lt_operator },
-    .{ .name = ">", .Kind = Token.Kind.gt_operator },
-    .{ .name = "(", .Kind = Token.Kind.left_paren_syntax },
-    .{ .name = ")", .Kind = Token.Kind.right_paren_syntax },
-    .{ .name = ",", .Kind = Token.Kind.comma_syntax },
+    .{ .name = "CREATE TABLE", .kind = Kind.create_table_keyword },
+    .{ .name = "INSERT INTO", .kind = Kind.insert_keyword },
+    .{ .name = "SELECT", .kind = Kind.select_keyword },
+    .{ .name = "VALUES", .kind = Kind.values_keyword },
+    .{ .name = "WHERE", .kind = Kind.where_keyword },
+    .{ .name = "FROM", .kind = Kind.from_keyword },
+    .{ .name = "||", .kind = Kind.concat_operator },
+    .{ .name = "=", .kind = Kind.equal_operator },
+    .{ .name = "+", .kind = Kind.plus_operator },
+    .{ .name = "<", .kind = Kind.lt_operator },
+    .{ .name = ">", .kind = Kind.gt_operator },
+    .{ .name = "(", .kind = Kind.left_paren_syntax },
+    .{ .name = ")", .kind = Kind.right_paren_syntax },
+    .{ .name = ",", .kind = Kind.comma_syntax },
 };
 
 pub const Token = struct {
@@ -77,7 +78,56 @@ pub const Token = struct {
     pub fn string(self: Self) []const u8 {
         return self.source[self.start..self.end];
     }
+
+    fn debug(self: Self, msg: []const u8) void {
+        var line: usize = 0;
+        var column: usize = 0;
+        var lineStartIndex: usize = 0;
+        var lineEndIndex: usize = 0;
+        var i: usize = 0;
+
+        var source = self.source;
+        while (i < source.len) {
+            if (source[i] == '\n') {
+                line = line + 1;
+                column = 0;
+                lineStartIndex = i;
+            } else {
+                column = column + 1;
+            }
+
+            if (i == self.start) {
+                // Find the end of the line
+                lineEndIndex = i;
+                while (source[lineEndIndex] != '\n') {
+                    lineEndIndex = lineEndIndex + 1;
+                }
+                break;
+            }
+
+            i = i + 1;
+        }
+
+        std.debug.print(
+            "{s}\nNear line {}, column {}.\n{s}\n",
+            .{ msg, line + 1, column, source[lineStartIndex..lineEndIndex] },
+        );
+        while (column - 1 > 0) {
+            std.debug.print(" ", .{});
+            column = column - 1;
+        }
+        std.debug.print("^ Near here\n\n", .{});
+    }
 };
+
+pub fn debug(tokens: []Token, preferredIndex: usize, msg: []const u8) void {
+    var i = preferredIndex;
+    while (i >= tokens.len) {
+        i = i - 1;
+    }
+
+    tokens[i].debug(msg);
+}
 
 pub const Lex = struct {
     index: u64,
@@ -210,40 +260,185 @@ fn eatWhitespace(source: []const u8, index: u64) u64 {
     return res;
 }
 
-fn asciiCaseInsensitiveEqual(actual: []const u8, expected: []const u8) bool {
-    var index: u64 = 1;
-    while (index < actual.len and index < expected.len) {
-        if (actual[index] == expected[index]) {
-            return true;
+fn asciiCaseInsensitiveEqual(left: []const u8, right: []const u8) bool {
+    var min = left;
+    if (right.len < left.len) {
+        min = right;
+    }
+
+    for (min, 0..) |_, i| {
+        var l = left[i];
+        if (l >= 97 and l <= 122) {
+            l = l - 32;
         }
 
-        if (actual[index] >= 32 and (actual[index] - 32) == expected[index]) {
-            return true;
+        var r = right[i];
+        if (r >= 97 and r <= 122) {
+            r = r - 32;
         }
-        if (expected[index] >= 32 and actual[index] == (expected[index] - 32))
-            index += 1;
+
+        if (l != r) {
+            return false;
+        }
     }
-    return false;
+
+    return true;
 }
 
-// fn asciiCaseInsensitiveEqual(left: String, right: String) bool {
-//     var min = left;
-//     if (right.len < left.len) {
-//         min = right;
-//     }
+fn lexKeyword(source: []const u8, index: u64) struct { next_position: u64, token: ?Token } {
+    var longest_len: u64 = 0;
+    var kind = Kind.select_keyword;
+    for (BUILTINS) |builtin| {
+        if (index + builtin.name.len >= source.len) {
+            continue;
+        }
 
-//     for (min) |_, i| {
-//         var l = left[i];
-//         if (l >= 97 and l <= 122) {
-//             l = l - 32;
-//         }
+        if (asciiCaseInsensitiveEqual(source[index .. index + builtin.name.len], builtin.name)) {
+            longest_len = builtin.name.len;
+            kind = builtin.kind;
+            // First match is the longest match
+            break;
+        }
+    }
 
-//         var r = right[i];
-//         if (r >= 97 and r <= 122) {
-//             r = r - 32;
-//         }
+    if (longest_len == 0) {
+        return .{ .next_position = 0, .token = null };
+    }
 
-//         if (l != r) {
-//             return false;
-//         }
-//     }
+    return .{
+        .next_position = index + longest_len,
+        .token = Token{
+            .source = source,
+            .start = index,
+            .end = index + longest_len,
+            .kind = kind,
+        },
+    };
+}
+
+fn lexInteger(source: []const u8, index: u64) struct { next_position: u64, token: ?Token } {
+    const start = index;
+    var end = index;
+    while (source[end] >= '0' and source[end] <= '9') {
+        end = end + 1;
+    }
+
+    if (start == end) {
+        return .{ .next_position = 0, .token = null };
+    }
+
+    return .{
+        .next_position = end,
+        .token = Token{
+            .source = source,
+            .start = start,
+            .end = end,
+            .kind = Kind.integer,
+        },
+    };
+}
+
+fn lexString(source: []const u8, index: u64) struct { next_position: u64, token: ?Token } {
+    var i = index;
+    if (source[i] != '\'') {
+        return .{ .next_position = 0, .token = null };
+    }
+    i = i + 1;
+
+    const start = i;
+    var end = i;
+    while (source[i] != '\'') {
+        end = end + 1;
+        i = i + 1;
+    }
+
+    if (source[i] == '\'') {
+        i = i + 1;
+    }
+
+    if (start == end) {
+        return .{ .next_position = 0, .token = null };
+    }
+
+    return .{
+        .next_position = i,
+        .token = Token{
+            .source = source,
+            .start = start,
+            .end = end,
+            .kind = Kind.string,
+        },
+    };
+}
+
+fn lexIdentifier(source: []const u8, index: u64) struct { next_position: u64, token: ?Token } {
+    const start = index;
+    var end = index;
+    var i = index;
+    while ((source[i] >= 'a' and source[i] <= 'z') or
+        (source[i] >= 'A' and source[i] <= 'Z') or
+        (source[i] == '*'))
+    {
+        end = end + 1;
+        i = i + 1;
+    }
+
+    if (start == end) {
+        return .{ .next_position = 0, .token = null };
+    }
+
+    return .{
+        .next_position = end,
+        .token = Token{
+            .source = source,
+            .start = start,
+            .end = end,
+            .kind = Kind.identifier,
+        },
+    };
+}
+
+pub fn lex(source: []const u8, tokens: *std.ArrayList(Token)) ?[]const u8 {
+    var i: u64 = 0;
+    while (true) {
+        i = eatWhitespace(source, i);
+        if (i >= source.len) {
+            break;
+        }
+
+        const keyword_res = lexKeyword(source, i);
+        if (keyword_res.token) |token| {
+            tokens.append(token) catch return "Failed to allocate space for keyword token";
+            i = keyword_res.next_position;
+            continue;
+        }
+
+        const integer_res = lexInteger(source, i);
+        if (integer_res.token) |token| {
+            tokens.append(token) catch return "Failed to allocate space for integer token";
+            i = integer_res.next_position;
+            continue;
+        }
+
+        const string_res = lexString(source, i);
+        if (string_res.token) |token| {
+            tokens.append(token) catch return "Failed to allocate space for string token";
+            i = string_res.next_position;
+            continue;
+        }
+
+        const identifier_res = lexIdentifier(source, i);
+        if (identifier_res.token) |token| {
+            tokens.append(token) catch return "Failed to allocate space for identifier token";
+            i = identifier_res.next_position;
+            continue;
+        }
+
+        if (tokens.items.len > 0) {
+            debug(tokens.items, tokens.items.len - 1, "Last good token.\n");
+        }
+        return "Bad token";
+    }
+
+    return null;
+}

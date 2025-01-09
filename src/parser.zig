@@ -1,21 +1,146 @@
 const std = @import("std");
-const Token = @import("lex.zig").Token;
-const Kind = @import("lex.zig").Kind;
-const ast = @import("ast.zig");
+const lex = @import("lex.zig");
+
+const Token = lex.Token;
+const Kind = lex.Kind;
+
+pub const ExpressionAST = union(enum) {
+    literal: Token,
+    binary_operation: BinaryOperationAST,
+
+    fn print(self: ExpressionAST) void {
+        switch (self) {
+            .literal => |literal| switch (literal.kind) {
+                .string => std.debug.print("'{s}'", .{literal.string()}),
+                else => std.debug.print("{s}", .{literal.string()}),
+            },
+            .binary_operation => self.binary_operation.print(),
+        }
+    }
+};
+
+pub const BinaryOperationAST = struct {
+    operator: Token,
+    left: *ExpressionAST,
+    right: *ExpressionAST,
+
+    fn print(self: BinaryOperationAST) void {
+        self.left.print();
+        std.debug.print(" {s} ", .{self.operator.string()});
+        self.right.print();
+    }
+};
+
+pub const SelectAST = struct {
+    columns: []ExpressionAST,
+    from: Token,
+    where: ?ExpressionAST,
+
+    const Self = @This();
+
+    fn print(self: Self) void {
+        std.debug.print("SELECT\n", .{});
+
+        for (self.columns, 0..) |column, i| {
+            std.debug.print("  ", .{});
+
+            column.print();
+            if (i < self.columns.len - 1) {
+                std.debug.print(",", .{});
+            }
+
+            std.debug.print("\n", .{});
+        }
+
+        std.debug.print("FROM\n  {s}", .{self.from.string()});
+
+        if (self.where) |where| {
+            std.debug.print("\nWHERE\n  ", .{});
+            where.print();
+        }
+
+        std.debug.print("\n", .{});
+    }
+};
+
+const CreateTableColumnAST = struct {
+    name: Token,
+    kind: Token,
+};
+
+pub const CreateTableAST = struct {
+    table: Token,
+    columns: []CreateTableColumnAST,
+
+    fn print(self: CreateTableAST) void {
+        std.debug.print("CREATE TABLE {s} (\n", .{self.table.string()});
+
+        for (self.columns, 0..) |column, i| {
+            std.debug.print(
+                "  {s} {s}",
+                .{ column.name.string(), column.kind.string() },
+            );
+            if (i < self.columns.len - 1) {
+                std.debug.print(",", .{});
+            }
+            std.debug.print("\n", .{});
+        }
+        std.debug.print(")\n", .{});
+    }
+};
+
+pub const InsertAST = struct {
+    table: Token,
+    values: []ExpressionAST,
+
+    fn print(self: InsertAST) void {
+        std.debug.print("INSERT INTO {s} VALUES (", .{self.table.string()});
+        for (self.values, 0..) |value, i| {
+            value.print();
+            if (i < self.values.len - 1) {
+                std.debug.print(", ", .{});
+            }
+        }
+        std.debug.print(")\n", .{});
+    }
+};
+
+pub const AST = union(enum) {
+    select: SelectAST,
+    create_table: CreateTableAST,
+    insert: InsertAST,
+
+    pub fn print(self: AST) void {
+        switch (self) {
+            .select => |select| select.print(),
+            .insert => |insert| insert.print(),
+            .create_table => |create_table| create_table.print(),
+        }
+    }
+};
 
 pub const ParserError = error{
-    InvalidStatement,
-    ExpectCommaSyntax,
+    InvalidSelectStatement,
+    ExpectComma,
     ExpectIdentifier,
     ExpectSelectKeyword,
+    ExpectFromKeyword,
     ExpectCreateKeyword,
+    ExpectCreateTableName,
     ExpectInsertKeyword,
     ExpectLeftParenSyntax,
     ExpectRightParenSyntax,
     EmptyColumns,
     UnexpectedToken,
+    UnexpectedStatement,
     ExpectValueKeyword,
     EmptyValues,
+    NoExpression,
+    FailAllocateColumns,
+    FailAllocateToken,
+    FailAllocateExpression,
+    FailAllocateLeftExpression,
+    FailAllocateRightExpression,
 };
 
 pub const Parser = struct {
@@ -26,7 +151,7 @@ pub const Parser = struct {
         return Parser{ .allocator = allocator };
     }
 
-    fn expectTokenKind(tokens: []Token, index: usize, kind: Kind) bool {
+    fn expectTokenKind(tokens: []Token, index: u64, kind: Kind) bool {
         if (index >= tokens.len) {
             return false;
         }
@@ -34,253 +159,249 @@ pub const Parser = struct {
         return tokens[index].kind == kind;
     }
 
-    fn parseExpression(
-        self: Self,
-        tokens: []Token,
-        index: *usize,
-    ) !ast.ExpressionAST {
-        var i = index.*;
-        var e: ast.ExpressionAST = undefined;
+    fn parseExpression(self: Self, tokens: []Token, index: u64) !struct {
+        ast: ExpressionAST,
+        next_position: u64,
+    } {
+        var i = index;
 
-        // 字符串、整型和普通标识符
-        if (ast.isExpectTokenKind(
-            tokens,
-            i,
-            Kind.string,
-        ) or ast.isExpectTokenKind(
-            tokens,
-            i,
-            Kind.integer,
-        ) or ast.isExpectTokenKind(
-            tokens,
-            i,
-            Kind.identifier,
-        )) {
-            e = .{ .literal = tokens[i] };
-            index.* += 1;
+        var e: ExpressionAST = undefined;
+
+        if (expectTokenKind(tokens, i, Kind.integer) or
+            expectTokenKind(tokens, i, Kind.identifier) or
+            expectTokenKind(tokens, i, Kind.string))
+        {
+            e = ExpressionAST{ .literal = tokens[i] };
+            i = i + 1;
         } else {
-            return ParserError.InvalidStatement;
+            return ParserError.NoExpression;
         }
-        i += 1;
 
-        // 计算符号
-        if (ast.isExpectTokenKind(
-            tokens,
-            i,
-            Kind.equal_operator,
-        ) or ast.isExpectTokenKind(
-            tokens,
-            i,
-            Kind.lt_operator,
-        ) or ast.isExpectTokenKind(
-            tokens,
-            i,
-            Kind.gt_operator,
-        ) or ast.isExpectTokenKind(
-            tokens,
-            i,
-            Kind.plus_operator,
-        ) or ast.isExpectTokenKind(
-            tokens,
-            i,
-            Kind.concat_operator,
-        )) {
-            const new_expression = ast.ExpressionAST{
-                .binary_operation = try ast.BinaryOperationAST.init(
-                    self.allocator,
-                    tokens[i],
-                ),
+        if (expectTokenKind(tokens, i, Kind.equal_operator) or
+            expectTokenKind(tokens, i, Kind.lt_operator) or
+            expectTokenKind(tokens, i, Kind.plus_operator) or
+            expectTokenKind(tokens, i, Kind.concat_operator))
+        {
+            const new_expression = ExpressionAST{
+                .binary_operation = BinaryOperationAST{
+                    .operator = tokens[i],
+                    .left = self.allocator.create(ExpressionAST) catch return ParserError.FailAllocateLeftExpression,
+                    .right = self.allocator.create(ExpressionAST) catch return ParserError.FailAllocateRightExpression,
+                },
             };
             new_expression.binary_operation.left.* = e;
             e = new_expression;
-            index.* += 1;
-            const parsed_expression = try self.parseExpression(tokens, index); // 递归分析
-            e.binary_operation.right.* = parsed_expression;
+
+            const res = try self.parseExpression(tokens, i + 1);
+            e.binary_operation.right.* = res.ast;
+            i = res.next_position;
         }
-        return e;
+
+        return .{ .ast = e, .next_position = i };
     }
 
-    fn parseSelect(
-        self: Self,
-        tokens: []Token,
-    ) !ast.SelectAST {
-        var i: usize = 0;
-        // expect select keyword
-        if (!ast.isExpectTokenKind(tokens, i, Kind.select_keyword)) {
+    fn parseSelect(self: Self, tokens: []Token) !AST {
+        var i: u64 = 0;
+        if (!expectTokenKind(tokens, i, Kind.select_keyword)) {
             return ParserError.ExpectSelectKeyword;
         }
-        i += 1;
+        i = i + 1;
 
-        var select = ast.SelectAST.init(self.allocator);
+        var columns = std.ArrayList(ExpressionAST).init(self.allocator);
+        var select = SelectAST{
+            .columns = undefined,
+            .from = undefined,
+            .where = null,
+        };
 
-        // analyze columns
-        var columns = std.ArrayList(ast.ExpressionAST).init(self.allocator);
-        while (!ast.isExpectTokenKind(tokens, i, Kind.from_keyword)) {
+        // Parse columns
+        while (!expectTokenKind(tokens, i, Kind.from_keyword)) {
             if (columns.items.len > 0) {
-                // 不止一个字段时，expect逗号分隔符
-                if (!ast.isExpectTokenKind(tokens, i, Kind.comma_syntax)) {
-                    return ParserError.ExpectCommaSyntax;
+                if (!expectTokenKind(tokens, i, Kind.comma_syntax)) {
+                    lex.debug(tokens, i, "Expected comma.\n");
+                    return ParserError.ExpectComma;
                 }
-                i += 1;
+
+                i = i + 1;
             }
 
-            // 分析columns表达式
-            const parsed_expression = try self.parseExpression(
-                tokens,
-                &i,
-            );
-            defer parsed_expression.deinit();
-
-            try columns.append(parsed_expression);
+            const res = try self.parseExpression(tokens, i);
+            i = res.next_position;
+            columns.append(res.ast) catch return ParserError.FailAllocateColumns;
         }
 
-        select.columns = try columns.toOwnedSlice();
-        if (select.columns.len == 0) {
-            // columns不能为空
-            return ParserError.ExpectIdentifier;
+        if (!expectTokenKind(tokens, i, Kind.from_keyword)) {
+            lex.debug(tokens, i, "Expected FROM keyword after this.\n");
+            return ParserError.ExpectFromKeyword;
         }
-        i += 1;
+        i = i + 1;
 
-        // table name
-        if (!ast.isExpectTokenKind(tokens, i, Kind.identifier)) {
-            return ParserError.ExpectIdentifier;
+        if (!expectTokenKind(tokens, i, Kind.identifier)) {
+            lex.debug(tokens, i, "Expected FROM table name after this.\n");
+            return ParserError.ExpectFromKeyword;
         }
+
         select.from = tokens[i];
-        i += 1;
+        i = i + 1;
 
-        // 分析where条件
-        if (ast.isExpectTokenKind(tokens, i, Kind.where_keyword)) {
-            i += 1;
-            const parsed_expression = try self.parseExpression(
-                tokens,
-                &i,
-            );
-            select.where = parsed_expression;
+        if (expectTokenKind(tokens, i, Kind.where_keyword)) {
+            // i + 1, skip past the where
+            const where_expression = try self.parseExpression(tokens, i + 1);
+            select.where = where_expression.ast;
+            i = where_expression.next_position;
         }
-        return select;
+
+        if (i < tokens.len) {
+            lex.debug(tokens, i, "Unexpected token.");
+            return ParserError.UnexpectedToken;
+        }
+
+        select.columns = columns.items;
+        return AST{ .select = select };
     }
 
-    fn parseCreateTable(self: Self, tokens: []Token) !ast.CreateTableAST {
-        var i: usize = 0;
-
-        // create table
-        if (!ast.isExpectTokenKind(tokens, i, Kind.create_table_keyword)) {
+    fn parseCreateTable(self: Self, tokens: []Token) !AST {
+        var i: u64 = 0;
+        if (!expectTokenKind(tokens, i, Kind.create_table_keyword)) {
             return ParserError.ExpectCreateKeyword;
         }
-        i += 1;
+        i = i + 1;
 
-        // table name
-        if (!ast.isExpectTokenKind(tokens, i, Kind.identifier)) {
-            return ParserError.ExpectIdentifier;
+        if (!expectTokenKind(tokens, i, Kind.identifier)) {
+            lex.debug(tokens, i, "Expected table name after CREATE TABLE keyword.\n");
+            return ParserError.ExpectCreateTableName;
         }
-        var create_table_ast = ast.CreateTableAST.init(self.allocator);
-        create_table_ast.table = tokens[i];
-        i += 1;
 
-        // columns: (field1 type, field2 type,...)
-        var columns = std.ArrayList(ast.CreateTableColumnAST).init(self.allocator);
-        if (!ast.isExpectTokenKind(tokens, i, Kind.left_paren_syntax)) {
+        var columns = std.ArrayList(CreateTableColumnAST).init(self.allocator);
+        var create_table = CreateTableAST{
+            .columns = undefined,
+            .table = tokens[i],
+        };
+        i = i + 1;
+
+        if (!expectTokenKind(tokens, i, Kind.left_paren_syntax)) {
+            lex.debug(tokens, i, "Expected opening paren after CREATE TABLE name.\n");
             return ParserError.ExpectLeftParenSyntax;
         }
-        i += 1;
-        while (!ast.isExpectTokenKind(tokens, i, Kind.right_paren_syntax)) {
+        i = i + 1;
+
+        while (!expectTokenKind(tokens, i, Kind.right_paren_syntax)) {
             if (columns.items.len > 0) {
-                if (!ast.isExpectTokenKind(tokens, i, Kind.comma_syntax)) {
-                    return ParserError.ExpectCommaSyntax;
+                if (!expectTokenKind(tokens, i, Kind.comma_syntax)) {
+                    lex.debug(tokens, i, "Expected comma.\n");
+                    return ParserError.ExpectComma;
                 }
-                i += 1;
+
+                i = i + 1;
             }
-            var column = ast.CreateTableColumnAST.init();
-            if (!ast.isExpectTokenKind(tokens, i, Kind.identifier)) {
+
+            var column = CreateTableColumnAST{ .name = undefined, .kind = undefined };
+            if (!expectTokenKind(tokens, i, Kind.identifier)) {
+                lex.debug(tokens, i, "Expected column name after comma.\n");
                 return ParserError.ExpectIdentifier;
             }
+
             column.name = tokens[i];
-            i += 1;
-            if (!ast.isExpectTokenKind(tokens, i, Kind.identifier)) {
+            i = i + 1;
+
+            if (!expectTokenKind(tokens, i, Kind.identifier)) {
+                lex.debug(tokens, i, "Expected column type after column name.\n");
                 return ParserError.ExpectIdentifier;
             }
+
             column.kind = tokens[i];
-            i += 1;
-            try columns.append(column);
-        }
-        if (columns.items.len == 0) {
-            return ParserError.EmptyColumns;
+            i = i + 1;
+
+            columns.append(column) catch return ParserError.FailAllocateColumns;
         }
 
-        // )
-        i += 1;
+        // Skip past final paren.
+        i = i + 1;
+
         if (i < tokens.len) {
+            lex.debug(tokens, i, "Unexpected token.");
             return ParserError.UnexpectedToken;
         }
 
-        create_table_ast.columns = try columns.toOwnedSlice();
-        return create_table_ast;
+        create_table.columns = columns.items;
+        return AST{ .create_table = create_table };
     }
 
-    fn parseInsert(self: Self, tokens: []Token) !ast.InsertAST {
-        var i: usize = 0;
-
-        // insert into
-        if (!ast.isExpectTokenKind(tokens, i, Kind.insert_keyword)) {
+    fn parseInsert(self: Self, tokens: []Token) !AST {
+        var i: u64 = 0;
+        if (!expectTokenKind(tokens, i, Kind.insert_keyword)) {
             return ParserError.ExpectInsertKeyword;
         }
-        i += 1;
+        i = i + 1;
 
-        // table name
-        if (!ast.isExpectTokenKind(tokens, i, Kind.identifier)) {
+        if (!expectTokenKind(tokens, i, Kind.identifier)) {
+            lex.debug(tokens, i, "Expected table name after INSERT INTO keyword.\n");
             return ParserError.ExpectIdentifier;
         }
-        var insert_ast = ast.InsertAST.init(self.allocator);
-        insert_ast.table = tokens[i];
-        i += 1;
 
-        // values (val1, val2,...)
-        var values = std.ArrayList(ast.ExpressionAST).init(self.allocator);
-        if (!ast.isExpectTokenKind(tokens, i, Kind.values_keyword)) {
-            return ParserError.ExpectValueKeyword;
+        var values = std.ArrayList(ExpressionAST).init(self.allocator);
+        var insert = InsertAST{
+            .values = undefined,
+            .table = tokens[i],
+        };
+        i = i + 1;
+
+        if (!expectTokenKind(tokens, i, Kind.values_keyword)) {
+            lex.debug(tokens, i, "Expected VALUES keyword.\n");
+            // return .{ .err = "Expected VALUES keyword" };
+            return ParserError.UnexpectedToken;
         }
-        i += 1;
-        if (!ast.isExpectTokenKind(tokens, i, Kind.left_paren_syntax)) {
+        i = i + 1;
+
+        if (!expectTokenKind(tokens, i, Kind.left_paren_syntax)) {
+            lex.debug(tokens, i, "Expected opening paren after CREATE TABLE name.\n");
+            // return .{ .err = "Expected opening paren" };
             return ParserError.ExpectLeftParenSyntax;
         }
-        i += 1;
-        while (!ast.isExpectTokenKind(tokens, i, Kind.right_paren_syntax)) {
+        i = i + 1;
+
+        while (!expectTokenKind(tokens, i, Kind.right_paren_syntax)) {
             if (values.items.len > 0) {
-                if (!ast.isExpectTokenKind(tokens, i, Kind.comma_syntax)) {
-                    return ParserError.ExpectCommaSyntax;
+                if (!expectTokenKind(tokens, i, Kind.comma_syntax)) {
+                    lex.debug(tokens, i, "Expected comma.\n");
+                    // return .{ .err = "Expected comma." };
+                    return ParserError.ExpectComma;
                 }
-                i += 1;
+
+                i = i + 1;
             }
-            const exp = try self.parseExpression(tokens, &i);
-            defer exp.deinit();
-            try values.append(exp);
-        }
-        if (values.items.len == 0) {
-            return ParserError.EmptyValues;
+
+            const res = try self.parseExpression(tokens, i);
+            values.append(res.ast) catch return ParserError.FailAllocateExpression;
+            i = res.next_position;
         }
 
-        // )
-        i += 1;
+        // Skip past final paren.
+        i = i + 1;
+
         if (i < tokens.len) {
+            lex.debug(tokens, i, "Unexpected token.");
+            // return .{ .err = "Did not complete parsing INSERT INTO" };
             return ParserError.UnexpectedToken;
         }
 
-        insert_ast.values = try values.toOwnedSlice();
-        return insert_ast;
+        insert.values = values.items;
+        return AST{ .insert = insert };
     }
 
-    pub fn parse(self: Self, tokens: []Token) !ast.AST {
+    pub fn parse(self: Self, tokens: []Token) !AST {
         if (expectTokenKind(tokens, 0, Kind.select_keyword)) {
-            const select_ast = try self.parseSelect(tokens);
-            return .{ .select_ast = select_ast };
-        } else if (expectTokenKind(tokens, 0, Kind.create_table_keyword)) {
-            const create_table_ast = try self.parseCreateTable(tokens);
-            return .{ .create_table_ast = create_table_ast };
-        } else if (expectTokenKind(tokens, 0, Kind.insert_keyword)) {
-            const insert_ast = try self.parseInsert(tokens);
-            return .{ .insert_ast = insert_ast };
+            return try self.parseSelect(tokens);
         }
 
-        return ParserError.InvalidStatement;
+        if (expectTokenKind(tokens, 0, Kind.create_table_keyword)) {
+            return try self.parseCreateTable(tokens);
+        }
+
+        if (expectTokenKind(tokens, 0, Kind.insert_keyword)) {
+            return try self.parseInsert(tokens);
+        }
+
+        return ParserError.UnexpectedStatement;
     }
 };
