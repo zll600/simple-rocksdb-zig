@@ -246,8 +246,8 @@ pub const Storage = struct {
         }
 
         const err = self.db.set(key.items, value.items);
-        if (err != null) {
-            std.debug.print("{s}\n", .{err});
+        if (err) |e| {
+            std.debug.print("{s}\n", .{e});
         }
     }
 
@@ -280,8 +280,8 @@ pub const Storage = struct {
         }
 
         const err = self.db.set(key.items, value.items);
-        if (err != null) {
-            std.debug.print("{s}\n", .{err});
+        if (err) |e| {
+            std.debug.print("{s}\n", .{e});
         }
     }
 

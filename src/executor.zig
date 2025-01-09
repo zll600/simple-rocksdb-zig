@@ -111,8 +111,8 @@ pub const Executor = struct {
             .empty = false,
         };
 
-        var iter = (self.storage.getRowIter(s.from.string())) catch |err| {
-            std.debug.print("{s}\n", .{err});
+        var iter = self.storage.getRowIter(s.from.string()) catch |err| {
+            std.debug.print("{?}\n", .{err});
             return ExecuteError.FailGetRowIterator;
         };
         defer iter.close();
@@ -155,7 +155,7 @@ pub const Executor = struct {
         for (i.values) |v| {
             const exp = try self.executeExpression(v, emptyRow);
             row.append(exp) catch |err| {
-                std.debug.print("Could not allocate for cell {s}\n", .{err});
+                std.debug.print("Could not allocate for cell {?}\n", .{err});
                 return ExecuteError.FailAllocateCell;
             };
         }

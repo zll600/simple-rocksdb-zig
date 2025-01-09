@@ -75,7 +75,7 @@ pub fn main() !void {
     }
     const var_parser = parser.Parser.init(allocator);
     var ast: parser.AST = var_parser.parse(tokens.items) catch |err| {
-        std.debug.print("Failed to parse: {s}", .{err});
+        std.debug.print("Failed to parse: {?}\n", .{err});
         return;
     };
 
@@ -97,7 +97,7 @@ pub fn main() !void {
     const var_storage = storage.Storage.init(allocator, db);
     const var_executor = executor.Executor.init(allocator, var_storage);
     const val = var_executor.execute(ast) catch |err| {
-        std.debug.print("Failed to execute: {s}", .{err});
+        std.debug.print("Failed to execute: {?}\n", .{err});
         return;
     };
     if (val.rows.len == 0) {
