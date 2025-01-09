@@ -57,10 +57,10 @@ pub const KV = struct {
 
     // Strings in RocksDB are malloc-ed. So make a copy that our
     // allocator owns and then free the string.
-    fn ownString(self: Self, string: []u8) []u8 {
-        const result = self.allocator.alloc(u8, string.len) catch unreachable;
-        std.mem.copy(u8, result, string);
-        std.heap.c_allocator.free(string);
+    fn ownString(self: Self, input_string: []u8) []u8 {
+        const result = self.allocator.alloc(u8, input_string.len) catch unreachable;
+        std.mem.copyForwards(u8, result, input_string);
+        std.heap.c_allocator.free(input_string);
         return result;
     }
 

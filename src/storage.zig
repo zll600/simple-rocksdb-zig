@@ -2,14 +2,14 @@ const std = @import("std");
 const kv = @import("kv.zig");
 const KV = @import("kv.zig").KV;
 
-pub fn serializeInteger(comptime T: type, buf: *std.ArrayList(u8), i: T) !void {
+pub fn serializeInteger(comptime T: type, buf: *std.ArrayList(u8), value: T) !void {
     var data: [@sizeOf(T)]u8 = undefined;
-    std.mem.writeIntBig(T, &data, i);
+    std.mem.writeInt(T, &data, value, .little);
     try buf.appendSlice(data[0..8]);
 }
 
 pub fn deserializeInteger(comptime T: type, buf: []const u8) T {
-    return std.mem.readIntBig(T, buf[0..@sizeOf(T)]);
+    return std.mem.readInt(T, buf[0..@sizeOf(T)], .little);
 }
 
 pub fn serializeBytes(buf: *std.ArrayList(u8), bytes: []const u8) !void {
@@ -109,11 +109,11 @@ pub const Value = union(enum) {
 pub const Row = struct {
     allocator: std.mem.Allocator,
     cells: std.ArrayList([]const u8),
-    fields: [][]const u8,
+    fields: []const []const u8,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, fields: [][]const u8) Row {
+    pub fn init(allocator: std.mem.Allocator, fields: []const []const u8) Row {
         return Row{
             .allocator = allocator,
             .cells = std.ArrayList([]const u8).init(allocator),
@@ -158,7 +158,7 @@ pub const RowIter = struct {
 
     const Self = @This();
 
-    fn init(allocator: std.mem.Allocator, iter: kv.Iter, fields: [][]const u8) Self {
+    fn init(allocator: std.mem.Allocator, iter: kv.Iter, fields: []const []const u8) Self {
         return Self{
             .iter = iter,
             .row = Row.init(allocator, fields),
@@ -200,6 +200,13 @@ pub const StorageError = error{
     FailAllocateKeyForTable,
     FailAllocateTableColumn,
     FailAllocateColumnType,
+    FailAllocateTablePrefix,
+    FailGetTableInfo,
+    NoSuchTable,
+    FailAllocateColumnName,
+    FailAllocateColumnKind,
+    FailGetRowIter,
+    FailGetTable,
 };
 
 pub const Storage = struct {
@@ -219,12 +226,12 @@ pub const Storage = struct {
         const file = try std.fs.cwd().openFileZ("/dev/random", .{});
         defer file.close();
 
-        var buf: [16]u8 = .{};
+        var buf: [16]u8 = undefined;
         _ = try file.read(&buf);
         return buf[0..];
     }
 
-    pub fn writeRow(self: Self, table: []const u8, row: Row) ?void {
+    pub fn writeRow(self: Self, table: []const u8, row: Row) !void {
         // Table name prefix
         var key = std.ArrayList(u8).init(self.allocator);
         key.writer().print("row_{s}_", .{table}) catch return StorageError.FailAllocateRowKey;
@@ -238,7 +245,10 @@ pub const Storage = struct {
             serializeBytes(&value, cell) catch return StorageError.FailAllocateCell;
         }
 
-        return self.db.set(key.items, value.items);
+        const err = self.db.set(key.items, value.items);
+        if (err != null) {
+            std.debug.print("{s}\n", .{err});
+        }
     }
 
     pub fn getRowIter(self: Self, table: []const u8) !RowIter {
@@ -246,19 +256,19 @@ pub const Storage = struct {
         rowPrefix.writer().print("row_{s}_", .{table}) catch return StorageError.FailAllocateRowPrefix;
 
         const iter = switch (self.db.iter(rowPrefix.items)) {
-            .err => |err| return .{ .err = err },
+            .err => |err| {
+                std.debug.print("{s}\n", .{err});
+                return StorageError.FailGetRowIter;
+            },
             .val => |it| it,
         };
 
-        const tableInfo = switch (self.getTable(table)) {
-            .err => |err| return .{ .err = err },
-            .val => |t| t,
-        };
+        const tableInfo = try self.getTable(table);
 
         return RowIter.init(self.allocator, iter, tableInfo.columns);
     }
 
-    pub fn writeTable(self: Self, table: Table) ?StorageError {
+    pub fn writeTable(self: Self, table: Table) !void {
         // Table name prefix
         var key = std.ArrayList(u8).init(self.allocator);
         key.writer().print("tbl_{s}_", .{table.name}) catch return StorageError.FailAllocateKeyForTable;
@@ -269,7 +279,10 @@ pub const Storage = struct {
             serializeBytes(&value, table.types[i]) catch return StorageError.FailAllocateColumnType;
         }
 
-        return self.db.set(key.items, value.items);
+        const err = self.db.set(key.items, value.items);
+        if (err != null) {
+            std.debug.print("{s}\n", .{err});
+        }
     }
 
     pub fn getTable(self: Self, name: []const u8) !Table {
@@ -286,7 +299,7 @@ pub const Storage = struct {
 
         // First grab table info
         var columnInfo = switch (self.db.get(tableKey.items)) {
-            .err => |err| return .{ .err = err },
+            .err => return StorageError.FailGetTableInfo,
             .val => |val| val,
             .not_found => return StorageError.NoSuchTable,
         };

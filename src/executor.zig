@@ -4,14 +4,19 @@ const storage = @import("storage.zig");
 const StorageError = @import("storage.zig").StorageError;
 
 pub const QueryResponse = struct {
-    rows: []const []const u8,
+    rows: [][]const []const u8,
     fields: []const []const u8,
-    allocator: std.mem.Allocator,
+    empty: bool,
 };
 
 pub const ExecuteError = error{
     TableAlreadyExists,
     TableNotFound,
+    FailAllocateRequestedFields,
+    FailGetRowIterator,
+    FailAllocateRequestedCells,
+    FailAllocateRow,
+    FailAllocateCell,
 };
 
 pub const Executor = struct {
@@ -33,8 +38,8 @@ pub const Executor = struct {
                 else => unreachable,
             },
             .binary_operation => |bin_op| {
-                const left = try self.executeExpression(bin_op.left.*, row);
-                const right = try self.executeExpression(bin_op.right.*, row);
+                var left = try self.executeExpression(bin_op.left.*, row);
+                var right = try self.executeExpression(bin_op.right.*, row);
 
                 if (bin_op.operator.kind == .equal_operator) {
                     // Cast dissimilar types to serde
@@ -83,10 +88,7 @@ pub const Executor = struct {
     }
 
     fn executeSelect(self: Self, s: parser.SelectAST) !QueryResponse {
-        switch (self.storage.getTable(s.from.string())) {
-            .err => |err| return .{ .err = err },
-            else => _ = 1,
-        }
+        _ = self.storage.getTable(s.from.string()) catch return ExecuteError.TableNotFound;
 
         // Now validate and store requested fields
         var requestedFields = std.ArrayList([]const u8).init(self.allocator);
@@ -100,9 +102,7 @@ pub const Executor = struct {
                 // TODO: give reasonable names
                 else => "unknown",
             };
-            requestedFields.append(fieldName) catch return .{
-                .err = "Could not allocate for requested field.",
-            };
+            requestedFields.append(fieldName) catch return ExecuteError.FailAllocateRequestedFields;
         }
         var rows = std.ArrayList([][]const u8).init(self.allocator);
         var response = QueryResponse{
@@ -111,16 +111,16 @@ pub const Executor = struct {
             .empty = false,
         };
 
-        var iter = switch (self.storage.getRowIter(s.from.string())) {
-            .err => |err| return .{ .err = err },
-            .val => |it| it,
+        var iter = (self.storage.getRowIter(s.from.string())) catch |err| {
+            std.debug.print("{s}\n", .{err});
+            return ExecuteError.FailGetRowIterator;
         };
         defer iter.close();
 
         while (iter.next()) |row| {
             var add = false;
             if (s.where) |where| {
-                if (self.executeExpression(where, row).asBool()) {
+                if ((try self.executeExpression(where, row)).asBool()) {
                     add = true;
                 }
             } else {
@@ -130,38 +130,39 @@ pub const Executor = struct {
             if (add) {
                 var requested = std.ArrayList([]const u8).init(self.allocator);
                 for (s.columns) |exp| {
-                    var val = self.executeExpression(exp, row);
+                    var val = try self.executeExpression(exp, row);
                     var valBuf = std.ArrayList(u8).init(self.allocator);
                     val.asString(&valBuf) catch unreachable;
-                    requested.append(valBuf.items) catch return .{
-                        .err = "Could not allocate for requested cell",
+                    requested.append(valBuf.items) catch {
+                        std.debug.print("Could not allocate for requested cell\n", .{});
+                        return ExecuteError.FailAllocateRequestedCells;
                     };
                 }
-                rows.append(requested.items) catch return .{
-                    .err = "Could not allocate for row",
+                rows.append(requested.items) catch return {
+                    std.debug.print("Could not allocate for row\n", .{});
+                    return ExecuteError.FailAllocateRow;
                 };
             }
         }
 
         response.rows = rows.items;
-        return .{ .val = response };
+        return response;
     }
 
     fn executeInsert(self: Executor, i: parser.InsertAST) !QueryResponse {
         const emptyRow = storage.Row.init(self.allocator, undefined);
         var row = storage.Row.init(self.allocator, undefined);
         for (i.values) |v| {
-            const exp = self.executeExpression(v, emptyRow);
-            row.append(exp) catch return .{ .err = "Could not allocate for cell" };
+            const exp = try self.executeExpression(v, emptyRow);
+            row.append(exp) catch |err| {
+                std.debug.print("Could not allocate for cell {s}\n", .{err});
+                return ExecuteError.FailAllocateCell;
+            };
         }
 
-        if (self.storage.writeRow(i.table.string(), row)) |err| {
-            return .{ .err = err };
-        }
+        _ = try self.storage.writeRow(i.table.string(), row);
 
-        return .{
-            .val = .{ .fields = undefined, .rows = undefined, .empty = true },
-        };
+        return .{ .fields = undefined, .rows = undefined, .empty = true };
     }
 
     fn executeCreateTable(self: Self, c: parser.CreateTableAST) !QueryResponse {
@@ -169,11 +170,13 @@ pub const Executor = struct {
         var types = std.ArrayList([]const u8).init(self.allocator);
 
         for (c.columns) |column| {
-            columns.append(column.name.string()) catch return .{
-                .err = "Could not allocate for column name",
+            columns.append(column.name.string()) catch |err| return {
+                std.debug.print("Could not allocate for column name", .{});
+                return err;
             };
-            types.append(column.kind.string()) catch return .{
-                .err = "Could not allocate for column kind",
+            types.append(column.kind.string()) catch |err| return {
+                std.debug.print("Could not allocate for column kind", .{});
+                return err;
             };
         }
 
@@ -183,28 +186,15 @@ pub const Executor = struct {
             .types = types.items,
         };
 
-        if (self.storage.writeTable(table)) |err| {
-            return .{ .err = err };
-        }
-        return .{
-            .val = .{ .fields = undefined, .rows = undefined, .empty = true },
-        };
+        _ = try self.storage.writeTable(table);
+        return .{ .fields = undefined, .rows = undefined, .empty = true };
     }
 
     pub fn execute(self: Self, ast: parser.AST) !QueryResponse {
         return switch (ast) {
-            .select => |select| switch (self.executeSelect(select)) {
-                .val => |val| .{ .val = val },
-                .err => |err| .{ .err = err },
-            },
-            .insert => |insert| switch (self.executeInsert(insert)) {
-                .val => |val| .{ .val = val },
-                .err => |err| .{ .err = err },
-            },
-            .create_table => |createTable| switch (self.executeCreateTable(createTable)) {
-                .val => |val| .{ .val = val },
-                .err => |err| .{ .err = err },
-            },
+            .select => |select| try self.executeSelect(select),
+            .insert => |insert| try self.executeInsert(insert),
+            .create_table => |createTable| try self.executeCreateTable(createTable),
         };
     }
 };

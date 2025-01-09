@@ -96,40 +96,36 @@ pub fn main() !void {
 
     const var_storage = storage.Storage.init(allocator, db);
     const var_executor = executor.Executor.init(allocator, var_storage);
-    switch (var_executor.execute(ast)) {
-        .err => |err| {
-            std.debug.print("Failed to execute: {s}", .{err});
-            return;
-        },
-        .val => |val| {
-            if (val.rows.len == 0) {
-                std.debug.print("ok\n", .{});
-                return;
-            }
+    const val = var_executor.execute(ast) catch |err| {
+        std.debug.print("Failed to execute: {s}", .{err});
+        return;
+    };
+    if (val.rows.len == 0) {
+        std.debug.print("ok\n", .{});
+        return;
+    }
 
-            std.debug.print("| ", .{});
-            for (val.fields) |field| {
-                std.debug.print("{s}\t\t|", .{field});
-            }
-            std.debug.print("\n", .{});
-            std.debug.print("+ ", .{});
-            for (val.fields) |field| {
-                var fieldLen = field.len;
-                while (fieldLen > 0) {
-                    std.debug.print("=", .{});
-                    fieldLen -= 1;
-                }
-                std.debug.print("\t\t+", .{});
-            }
-            std.debug.print("\n", .{});
+    std.debug.print("| ", .{});
+    for (val.fields) |field| {
+        std.debug.print("{s}\t\t|", .{field});
+    }
+    std.debug.print("\n", .{});
+    std.debug.print("+ ", .{});
+    for (val.fields) |field| {
+        var fieldLen = field.len;
+        while (fieldLen > 0) {
+            std.debug.print("=", .{});
+            fieldLen -= 1;
+        }
+        std.debug.print("\t\t+", .{});
+    }
+    std.debug.print("\n", .{});
 
-            for (val.rows) |row| {
-                std.debug.print("| ", .{});
-                for (row) |cell| {
-                    std.debug.print("{s}\t\t|", .{cell});
-                }
-                std.debug.print("\n", .{});
-            }
-        },
+    for (val.rows) |row| {
+        std.debug.print("| ", .{});
+        for (row) |cell| {
+            std.debug.print("{s}\t\t|", .{cell});
+        }
+        std.debug.print("\n", .{});
     }
 }
