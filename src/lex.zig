@@ -33,25 +33,25 @@ pub const Kind = enum {
 
 pub const Builtin = struct {
     name: []const u8,
-    Kind: Kind,
+    kind: Kind,
 };
 
 // sorting by length of keyword.
 const BUILTINS = [_]Builtin{
-    .{ .name = "CREATE TABLE", .Kind = Kind.create_table_keyword },
-    .{ .name = "INSERT INTO", .Kind = Kind.insert_keyword },
-    .{ .name = "SELECT", .Kind = Kind.select_keyword },
-    .{ .name = "VALUES", .Kind = Kind.values_keyword },
-    .{ .name = "WHERE", .Kind = Kind.where_keyword },
-    .{ .name = "FROM", .Kind = Kind.from_keyword },
-    .{ .name = "||", .Kind = Kind.concat_operator },
-    .{ .name = "=", .Kind = Kind.equal_operator },
-    .{ .name = "+", .Kind = Kind.plus_operator },
-    .{ .name = "<", .Kind = Kind.lt_operator },
-    .{ .name = ">", .Kind = Kind.gt_operator },
-    .{ .name = "(", .Kind = Kind.left_paren_syntax },
-    .{ .name = ")", .Kind = Kind.right_paren_syntax },
-    .{ .name = ",", .Kind = Kind.comma_syntax },
+    .{ .name = "CREATE TABLE", .kind = Kind.create_table_keyword },
+    .{ .name = "INSERT INTO", .kind = Kind.insert_keyword },
+    .{ .name = "SELECT", .kind = Kind.select_keyword },
+    .{ .name = "VALUES", .kind = Kind.values_keyword },
+    .{ .name = "WHERE", .kind = Kind.where_keyword },
+    .{ .name = "FROM", .kind = Kind.from_keyword },
+    .{ .name = "||", .kind = Kind.concat_operator },
+    .{ .name = "=", .kind = Kind.equal_operator },
+    .{ .name = "+", .kind = Kind.plus_operator },
+    .{ .name = "<", .kind = Kind.lt_operator },
+    .{ .name = ">", .kind = Kind.gt_operator },
+    .{ .name = "(", .kind = Kind.left_paren_syntax },
+    .{ .name = ")", .kind = Kind.right_paren_syntax },
+    .{ .name = ",", .kind = Kind.comma_syntax },
 };
 
 pub const Token = struct {
@@ -306,7 +306,7 @@ fn lexKeyword(source: []const u8, index: u64) struct { next_position: u64, token
     }
 
     return .{
-        .nextPosition = index + longest_len,
+        .next_position = index + longest_len,
         .token = Token{
             .source = source,
             .start = index,
@@ -423,7 +423,7 @@ pub fn lex(source: []const u8, tokens: *std.ArrayList(Token)) ?[]const u8 {
         const string_res = lexString(source, i);
         if (string_res.token) |token| {
             tokens.append(token) catch return "Failed to allocate space for string token";
-            i = string_res.nextPosition;
+            i = string_res.next_position;
             continue;
         }
 

@@ -2,24 +2,43 @@ const std = @import("std");
 const kv = @import("kv.zig");
 const KV = @import("kv.zig").KV;
 
+pub fn serializeInteger(comptime T: type, buf: *std.ArrayList(u8), i: T) !void {
+    var data: [@sizeOf(T)]u8 = undefined;
+    std.mem.writeIntBig(T, &data, i);
+    try buf.appendSlice(data[0..8]);
+}
+
+pub fn deserializeInteger(comptime T: type, buf: []const u8) T {
+    return std.mem.readIntBig(T, buf[0..@sizeOf(T)]);
+}
+
+pub fn serializeBytes(buf: *std.ArrayList(u8), bytes: []const u8) !void {
+    try serializeInteger(u64, buf, bytes.len);
+    try buf.appendSlice(bytes);
+}
+
+pub fn deserializeBytes(bytes: []const u8) struct {
+    offset: u64,
+    bytes: []const u8,
+} {
+    const length = deserializeInteger(u64, bytes);
+    const offset = length + 8;
+    return .{ .offset = offset, .bytes = bytes[8..offset] };
+}
+
 pub const Value = union(enum) {
     bool_value: bool,
     null_value: bool,
     string_value: []const u8,
     integer_value: i64,
 
+    const Self = @This();
+
     pub const TRUE = Value{ .bool_value = true };
     pub const FALSE = Value{ .bool_value = false };
     pub const NULL = Value{ .null_value = true };
 
-    pub fn fromIntegerString(iBytes: []const u8) Value {
-        const i = std.fmt.parseInt(i64, iBytes, 10) catch return Value{
-            .integer_value = 0,
-        };
-        return Value{ .integer_value = i };
-    }
-
-    pub fn asBool(self: Value) bool {
+    pub fn asBool(self: Self) bool {
         return switch (self) {
             .null_value => false,
             .bool_value => |value| value,
@@ -28,7 +47,7 @@ pub const Value = union(enum) {
         };
     }
 
-    pub fn asString(self: Value, buf: *std.ArrayList(u8)) !void {
+    pub fn asString(self: Self, buf: *std.ArrayList(u8)) !void {
         try switch (self) {
             .null_value => _ = 1, // Do nothing
             .bool_value => |value| buf.appendSlice(if (value) "true" else "false"),
@@ -37,7 +56,7 @@ pub const Value = union(enum) {
         };
     }
 
-    pub fn asInteger(self: Value) i64 {
+    pub fn asInteger(self: Self) i64 {
         return switch (self) {
             .null_value => 0,
             .bool_value => |value| if (value) 1 else 0,
@@ -46,73 +65,141 @@ pub const Value = union(enum) {
         };
     }
 
-    pub fn serialize(self: Value, buf: *std.ArrayList(u8)) !void {
+    pub fn serialize(self: Self, buf: *std.ArrayList(u8)) []const u8 {
         switch (self) {
-            .null_value => return buf.append('0'),
-            .bool_value => |v| {
-                try buf.append('1');
-                return buf.append(if (v) '1' else '0');
+            .null_value => buf.append('0') catch return "",
+
+            .bool_value => |value| {
+                buf.append('1') catch return "";
+                buf.append(if (value) '1' else '0') catch return "";
             },
-            .string_value => |v| {
-                try buf.append('2');
-                return buf.appendSlice(v);
+
+            .string_value => |value| {
+                buf.append('2') catch return "";
+                buf.appendSlice(value) catch return "";
             },
-            .integer_value => |v| {
-                try buf.append('3');
-                var b2: [8]u8 = undefined;
-                serializeInteger(i64, v, &b2);
-                return buf.appendSlice(b2[0..]);
+
+            .integer_value => |value| {
+                buf.append('3') catch return "";
+                serializeInteger(i64, buf, value) catch return "";
             },
         }
+
+        return buf.items;
     }
 
-    pub fn deserialize(buf: []const u8) Value {
-        if (buf.len == 0) {
-            unreachable;
-        }
-        switch (buf[0]) {
-            '0' => return Value{ .null_value = true },
-            '1' => {
-                if (buf[1] == '1') {
-                    return Value{ .bool_value = true };
-                } else {
-                    return Value{ .bool_value = false };
-                }
-            },
-            '2' => return .{ .string_value = buf[1..] },
-            '3' => {
-                return Value{ .integer_value = deserializeInteger(i64, buf[1..]) };
-            },
+    pub fn deserialize(data: []const u8) Self {
+        return switch (data[0]) {
+            '0' => Self.NULL,
+            '1' => Self{ .bool_value = data[1] == '1' },
+            '2' => Self{ .string_value = data[1..] },
+            '3' => Self{ .integer_value = deserializeInteger(i64, data[1..]) },
             else => unreachable,
-        }
+        };
+    }
+
+    pub fn fromIntegerString(iBytes: []const u8) Self {
+        const i = std.fmt.parseInt(i64, iBytes, 10) catch return Self{
+            .integer_value = 0,
+        };
+        return Self{ .integer_value = i };
     }
 };
 
-fn serializeInteger(comptime T: type, i: T, buf: *[@sizeOf(T)]u8) void {
-    std.mem.writeInt(T, buf, i, .big);
-}
-fn deserializeInteger(comptime T: type, buf: []const u8) T {
-    return std.mem.readInt(T, buf[0..@sizeOf(T)], .big);
-}
+pub const Row = struct {
+    allocator: std.mem.Allocator,
+    cells: std.ArrayList([]const u8),
+    fields: [][]const u8,
 
-// [length: 4bytes][bytes]
-pub fn serializeBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
-    var h: [4]u8 = undefined;
-    serializeInteger(u32, @intCast(bytes.len), &h);
-    const parts = [_][]const u8{ &h, bytes };
-    return std.mem.concat(allocator, u8, &parts);
-}
+    const Self = @This();
 
-pub fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
-    const length = deserializeInteger(u32, bytes);
-    const offset = length + 4;
-    buf.* = bytes[4..offset];
-    return offset;
-}
+    pub fn init(allocator: std.mem.Allocator, fields: [][]const u8) Row {
+        return Row{
+            .allocator = allocator,
+            .cells = std.ArrayList([]const u8).init(allocator),
+            .fields = fields,
+        };
+    }
+
+    pub fn append(self: *Self, cell: Value) !void {
+        var cellBuffer = std.ArrayList(u8).init(self.allocator);
+        try self.cells.append(cell.serialize(&cellBuffer));
+    }
+
+    pub fn appendBytes(self: *Self, cell: []const u8) !void {
+        try self.cells.append(cell);
+    }
+
+    pub fn get(self: Self, field: []const u8) Value {
+        for (self.fields, 0..) |f, i| {
+            if (std.mem.eql(u8, field, f)) {
+                // Results are internal buffer views. So make a copy.
+                var copy = std.ArrayList(u8).init(self.allocator);
+                copy.appendSlice(self.cells.items[i]) catch return Value.NULL;
+                return Value.deserialize(copy.items);
+            }
+        }
+
+        return Value.NULL;
+    }
+
+    pub fn items(self: Self) [][]const u8 {
+        return self.cells.items;
+    }
+
+    fn reset(self: *Self) void {
+        self.cells.clearRetainingCapacity();
+    }
+};
+
+pub const RowIter = struct {
+    row: Row,
+    iter: kv.Iter,
+
+    const Self = @This();
+
+    fn init(allocator: std.mem.Allocator, iter: kv.Iter, fields: [][]const u8) Self {
+        return Self{
+            .iter = iter,
+            .row = Row.init(allocator, fields),
+        };
+    }
+
+    pub fn next(self: *Self) ?Row {
+        var rowBytes: []const u8 = undefined;
+        if (self.iter.next()) |b| {
+            rowBytes = b.value;
+        } else {
+            return null;
+        }
+
+        self.row.reset();
+        var offset: u64 = 0;
+        while (offset < rowBytes.len) {
+            const d = deserializeBytes(rowBytes[offset..]);
+            offset += d.offset;
+            self.row.appendBytes(d.bytes) catch return null;
+        }
+
+        return self.row;
+    }
+
+    pub fn close(self: RowIter) void {
+        self.iter.close();
+    }
+};
 
 pub const StorageError = error{
     TableNotFound,
     WriteTableKeyError,
+    FailAllocateRowKey,
+    FailGenerateId,
+    FailAllocateId,
+    FailAllocateCell,
+    FailAllocateRowPrefix,
+    FailAllocateKeyForTable,
+    FailAllocateTableColumn,
+    FailAllocateColumnType,
 };
 
 pub const Storage = struct {
@@ -128,19 +215,58 @@ pub const Storage = struct {
         };
     }
 
+    fn generateId() ![]u8 {
+        const file = try std.fs.cwd().openFileZ("/dev/random", .{});
+        defer file.close();
+
+        var buf: [16]u8 = .{};
+        _ = try file.read(&buf);
+        return buf[0..];
+    }
+
+    pub fn writeRow(self: Self, table: []const u8, row: Row) ?void {
+        // Table name prefix
+        var key = std.ArrayList(u8).init(self.allocator);
+        key.writer().print("row_{s}_", .{table}) catch return StorageError.FailAllocateRowKey;
+
+        // Unique row id
+        const id = generateId() catch return StorageError.FailGenerateId;
+        key.appendSlice(id) catch return StorageError.FailGenerateId;
+
+        var value = std.ArrayList(u8).init(self.allocator);
+        for (row.cells.items) |cell| {
+            serializeBytes(&value, cell) catch return StorageError.FailAllocateCell;
+        }
+
+        return self.db.set(key.items, value.items);
+    }
+
+    pub fn getRowIter(self: Self, table: []const u8) !RowIter {
+        var rowPrefix = std.ArrayList(u8).init(self.allocator);
+        rowPrefix.writer().print("row_{s}_", .{table}) catch return StorageError.FailAllocateRowPrefix;
+
+        const iter = switch (self.db.iter(rowPrefix.items)) {
+            .err => |err| return .{ .err = err },
+            .val => |it| it,
+        };
+
+        const tableInfo = switch (self.getTable(table)) {
+            .err => |err| return .{ .err = err },
+            .val => |t| t,
+        };
+
+        return RowIter.init(self.allocator, iter, tableInfo.columns);
+    }
+
     pub fn writeTable(self: Self, table: Table) ?StorageError {
         // Table name prefix
         var key = std.ArrayList(u8).init(self.allocator);
-        switch (key.writer().print("tbl_{s}_", .{table.name})) {
-            .err => {
-                std.log.info("Could not allocate key for table", .{});
-            },
-        }
+        key.writer().print("tbl_{s}_", .{table.name}) catch return StorageError.FailAllocateKeyForTable;
 
         var value = std.ArrayList(u8).init(self.allocator);
         for (table.columns, 0..) |column, i| {
-            serializeBytes(&value, column) catch return "Could not allocate for column";
-            serializeBytes(&value, table.types[i]) catch return "Could not allocate for column type";
+            serializeBytes(&value, column) catch return StorageError.FailAllocateTableColumn;
+            serializeBytes(&value, table.types[i]) catch return StorageError.FailAllocateColumnType;
         }
 
         return self.db.set(key.items, value.items);
@@ -148,39 +274,37 @@ pub const Storage = struct {
 
     pub fn getTable(self: Self, name: []const u8) !Table {
         var tableKey = std.ArrayList(u8).init(self.allocator);
-        tableKey.writer().print("tbl_{s}_", .{name}) catch return .{
-            .err = "Could not allocate for table prefix",
-        };
+        tableKey.writer().print("tbl_{s}_", .{name}) catch return StorageError.FailAllocateTablePrefix;
 
-        var columns = std.ArrayList(u8).init(self.allocator);
-        var types = std.ArrayList(u8).init(self.allocator);
+        var columns = std.ArrayList([]const u8).init(self.allocator);
+        var types = std.ArrayList([]const u8).init(self.allocator);
         var table = Table{
             .name = name,
             .columns = undefined,
             .types = undefined,
         };
+
         // First grab table info
-        var columnInfo = try self.db.get(tableKey.items);
+        var columnInfo = switch (self.db.get(tableKey.items)) {
+            .err => |err| return .{ .err = err },
+            .val => |val| val,
+            .not_found => return StorageError.NoSuchTable,
+        };
 
-        var columnOffset: usize = 0;
+        var columnOffset: u64 = 0;
         while (columnOffset < columnInfo.len) {
-            var column = deserializeBytes(columnInfo[columnOffset..]);
+            const column = deserializeBytes(columnInfo[columnOffset..]);
             columnOffset += column.offset;
-            columns.append(column.bytes) catch return .{
-                .err = "Could not allocate for column name.",
-            };
-
-            var kind = deserializeBytes(columnInfo[columnOffset..]);
+            columns.append(column.bytes) catch return StorageError.FailAllocateColumnName;
+            const kind = deserializeBytes(columnInfo[columnOffset..]);
             columnOffset += kind.offset;
-            types.append(kind.bytes) catch return .{
-                .err = "Could not allocate for column kind.",
-            };
+            types.append(kind.bytes) catch return StorageError.FailAllocateColumnKind;
         }
 
         table.columns = columns.items;
         table.types = types.items;
 
-        return .{ .val = table };
+        return table;
     }
 };
 
@@ -201,98 +325,5 @@ pub const Table = struct {
             .columns = columns,
             .types = types,
         };
-    }
-};
-
-pub const Row = struct {
-    const Self = @This();
-    allocator: std.mem.Allocator,
-    cells: std.ArrayList(Value),
-    table: Table,
-
-    pub fn init(allocator: std.mem.Allocator, table: Table) Self {
-        return Self{
-            .allocator = allocator,
-            .cells = std.ArrayList(Value).init(allocator),
-            .table = table,
-        };
-    }
-
-    pub fn deinit(self: Self) void {
-        for (self.cells.items) |c| {
-            c.deinit(self.allocator);
-        }
-        self.cells.deinit();
-    }
-
-    pub fn append(self: *Self, cell: Value) !void {
-        return self.cells.append(try cell.clone(self.allocator));
-    }
-
-    // 取出对应field的值
-    pub fn get(self: Self, field: []const u8, val: *Value) bool {
-        if (field.len == 0) {
-            return false;
-        }
-        for (self.table.columns, 0..) |f, i| {
-            if (std.mem.eql(u8, f, field)) {
-                val.* = self.cells.items[i];
-                return true;
-            }
-        }
-        return false;
-    }
-
-    pub fn reset(self: *Self) void {
-        for (self.cells.items) |c| {
-            c.deinit(self.allocator);
-        }
-        self.cells.clearRetainingCapacity();
-    }
-};
-
-const RowIter = struct {
-    const Self = @This();
-    iter: kv.Iter,
-    row_prefix: []const u8,
-    allocator: std.mem.Allocator,
-    table: Table,
-
-    fn init(
-        allocator: std.mem.Allocator,
-        db: KV,
-        row_prefix: []const u8,
-        table: Table,
-    ) !Self {
-        const rp = try allocator.dupe(u8, row_prefix);
-        return .{
-            .iter = try db.getIter(rp),
-            .row_prefix = rp,
-            .allocator = allocator,
-            .table = table,
-        };
-    }
-
-    pub fn deinit(self: Self) void {
-        self.allocator.free(self.row_prefix);
-        self.iter.deinit();
-    }
-
-    pub fn next(self: *Self) !?Row {
-        var b: []const u8 = undefined;
-        if (self.iter.next()) |m| {
-            // 对rocksdb执行前缀搜索
-            b = m.value;
-        } else {
-            return null;
-        }
-        var row = Row.init(self.allocator, self.table);
-        var offset: usize = 0;
-        while (offset < b.len) {
-            var buf: []const u8 = undefined;
-            offset += deserializeBytes(b[offset..], &buf);
-            try row.append(Value.deserialize(buf));
-        }
-        return row;
     }
 };

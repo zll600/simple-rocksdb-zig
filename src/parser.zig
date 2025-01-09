@@ -1,6 +1,5 @@
 const std = @import("std");
 const lex = @import("lex.zig");
-const ast = @import("ast.zig");
 
 const Token = lex.Token;
 const Kind = lex.Kind;
@@ -114,6 +113,8 @@ pub const AST = union(enum) {
     pub fn print(self: AST) void {
         switch (self) {
             .select => |select| select.print(),
+            .insert => |insert| insert.print(),
+            .create_table => |create_table| create_table.print(),
         }
     }
 };
@@ -131,11 +132,15 @@ pub const ParserError = error{
     ExpectRightParenSyntax,
     EmptyColumns,
     UnexpectedToken,
+    UnexpectedStatement,
     ExpectValueKeyword,
     EmptyValues,
     NoExpression,
     FailAllocateColumns,
     FailAllocateToken,
+    FailAllocateExpression,
+    FailAllocateLeftExpression,
+    FailAllocateRightExpression,
 };
 
 pub const Parser = struct {
@@ -172,20 +177,16 @@ pub const Parser = struct {
             return ParserError.NoExpression;
         }
 
-        if (expectTokenKind(tokens, i, Token.Kind.equal_operator) or
-            expectTokenKind(tokens, i, Token.Kind.lt_operator) or
-            expectTokenKind(tokens, i, Token.Kind.plus_operator) or
-            expectTokenKind(tokens, i, Token.Kind.concat_operator))
+        if (expectTokenKind(tokens, i, Kind.equal_operator) or
+            expectTokenKind(tokens, i, Kind.lt_operator) or
+            expectTokenKind(tokens, i, Kind.plus_operator) or
+            expectTokenKind(tokens, i, Kind.concat_operator))
         {
             const new_expression = ExpressionAST{
                 .binary_operation = BinaryOperationAST{
                     .operator = tokens[i],
-                    .left = self.allocator.create(ExpressionAST) catch return .{
-                        .err = "Could not allocate for left expression.",
-                    },
-                    .right = self.allocator.create(ExpressionAST) catch return .{
-                        .err = "Could not allocate for right expression.",
-                    },
+                    .left = self.allocator.create(ExpressionAST) catch return ParserError.FailAllocateLeftExpression,
+                    .right = self.allocator.create(ExpressionAST) catch return ParserError.FailAllocateRightExpression,
                 },
             };
             new_expression.binary_operation.left.* = e;
@@ -201,7 +202,7 @@ pub const Parser = struct {
 
     fn parseSelect(self: Self, tokens: []Token) !AST {
         var i: u64 = 0;
-        if (!expectTokenKind(tokens, i, Token.Kind.select_keyword)) {
+        if (!expectTokenKind(tokens, i, Kind.select_keyword)) {
             return ParserError.ExpectSelectKeyword;
         }
         i = i + 1;
@@ -216,7 +217,7 @@ pub const Parser = struct {
         // Parse columns
         while (!expectTokenKind(tokens, i, Kind.from_keyword)) {
             if (columns.items.len > 0) {
-                if (!expectTokenKind(tokens, i, Token.Kind.comma_syntax)) {
+                if (!expectTokenKind(tokens, i, Kind.comma_syntax)) {
                     lex.debug(tokens, i, "Expected comma.\n");
                     return ParserError.ExpectComma;
                 }
@@ -243,7 +244,7 @@ pub const Parser = struct {
         select.from = tokens[i];
         i = i + 1;
 
-        if (expectTokenKind(tokens, i, Token.Kind.where_keyword)) {
+        if (expectTokenKind(tokens, i, Kind.where_keyword)) {
             // i + 1, skip past the where
             const where_expression = try self.parseExpression(tokens, i + 1);
             select.where = where_expression.ast;
@@ -328,14 +329,14 @@ pub const Parser = struct {
 
     fn parseInsert(self: Self, tokens: []Token) !AST {
         var i: u64 = 0;
-        if (!expectTokenKind(tokens, i, Token.Kind.insert_keyword)) {
-            return .{ .err = "Expected INSERT INTO keyword" };
+        if (!expectTokenKind(tokens, i, Kind.insert_keyword)) {
+            return ParserError.ExpectInsertKeyword;
         }
         i = i + 1;
 
-        if (!expectTokenKind(tokens, i, Token.Kind.identifier)) {
+        if (!expectTokenKind(tokens, i, Kind.identifier)) {
             lex.debug(tokens, i, "Expected table name after INSERT INTO keyword.\n");
-            return .{ .err = "Expected INSERT INTO table name" };
+            return ParserError.ExpectIdentifier;
         }
 
         var values = std.ArrayList(ExpressionAST).init(self.allocator);
@@ -345,37 +346,34 @@ pub const Parser = struct {
         };
         i = i + 1;
 
-        if (!expectTokenKind(tokens, i, Token.Kind.values_keyword)) {
+        if (!expectTokenKind(tokens, i, Kind.values_keyword)) {
             lex.debug(tokens, i, "Expected VALUES keyword.\n");
-            return .{ .err = "Expected VALUES keyword" };
+            // return .{ .err = "Expected VALUES keyword" };
+            return ParserError.UnexpectedToken;
         }
         i = i + 1;
 
-        if (!expectTokenKind(tokens, i, Token.Kind.left_paren_syntax)) {
+        if (!expectTokenKind(tokens, i, Kind.left_paren_syntax)) {
             lex.debug(tokens, i, "Expected opening paren after CREATE TABLE name.\n");
-            return .{ .err = "Expected opening paren" };
+            // return .{ .err = "Expected opening paren" };
+            return ParserError.ExpectLeftParenSyntax;
         }
         i = i + 1;
 
-        while (!expectTokenKind(tokens, i, Token.Kind.right_paren_syntax)) {
+        while (!expectTokenKind(tokens, i, Kind.right_paren_syntax)) {
             if (values.items.len > 0) {
-                if (!expectTokenKind(tokens, i, Token.Kind.comma_syntax)) {
+                if (!expectTokenKind(tokens, i, Kind.comma_syntax)) {
                     lex.debug(tokens, i, "Expected comma.\n");
-                    return .{ .err = "Expected comma." };
+                    // return .{ .err = "Expected comma." };
+                    return ParserError.ExpectComma;
                 }
 
                 i = i + 1;
             }
 
-            switch (self.parseExpression(tokens, i)) {
-                .err => |err| return .{ .err = err },
-                .val => |val| {
-                    values.append(val.ast) catch return .{
-                        .err = "Could not allocate for expression.",
-                    };
-                    i = val.nextPosition;
-                },
-            }
+            const res = try self.parseExpression(tokens, i);
+            values.append(res.ast) catch return ParserError.FailAllocateExpression;
+            i = res.next_position;
         }
 
         // Skip past final paren.
@@ -383,25 +381,27 @@ pub const Parser = struct {
 
         if (i < tokens.len) {
             lex.debug(tokens, i, "Unexpected token.");
-            return .{ .err = "Did not complete parsing INSERT INTO" };
+            // return .{ .err = "Did not complete parsing INSERT INTO" };
+            return ParserError.UnexpectedToken;
         }
 
         insert.values = values.items;
-        return .{ .val = AST{ .insert = insert } };
+        return AST{ .insert = insert };
     }
 
-    pub fn parse(self: Self, tokens: []Token) !ast.AST {
+    pub fn parse(self: Self, tokens: []Token) !AST {
         if (expectTokenKind(tokens, 0, Kind.select_keyword)) {
-            const select_ast = try self.parseSelect(tokens);
-            return .{ .select_ast = select_ast };
-        } else if (expectTokenKind(tokens, 0, Kind.create_table_keyword)) {
-            const create_table_ast = try self.parseCreateTable(tokens);
-            return .{ .create_table_ast = create_table_ast };
-        } else if (expectTokenKind(tokens, 0, Kind.insert_keyword)) {
-            const insert_ast = try self.parseInsert(tokens);
-            return .{ .insert_ast = insert_ast };
+            return try self.parseSelect(tokens);
         }
 
-        return ParserError.InvalidStatement;
+        if (expectTokenKind(tokens, 0, Kind.create_table_keyword)) {
+            return try self.parseCreateTable(tokens);
+        }
+
+        if (expectTokenKind(tokens, 0, Kind.insert_keyword)) {
+            return try self.parseInsert(tokens);
+        }
+
+        return ParserError.UnexpectedStatement;
     }
 };

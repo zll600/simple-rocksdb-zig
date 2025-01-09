@@ -1,112 +1,135 @@
 const std = @import("std");
 const lex = @import("lex.zig");
-const Lex = @import("lex.zig").Lex;
-const Parser = @import("parser.zig").Parser;
-const KV = @import("kv.zig").KV;
-const Storage = @import("storage.zig").Storage;
-const Executor = @import("executor.zig").Executor;
-
-pub const DBError = error{
-    InvalidArgument,
-};
+const parser = @import("parser.zig");
+const kv = @import("kv.zig");
+const storage = @import("storage.zig");
+const executor = @import("executor.zig");
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const stdout = std.io.getStdOut().writer();
-
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
-
-    var database_path: []const u8 = undefined;
-    var script: []const u8 = undefined;
     var debugTokens = false;
     var debugAST = false;
+    var args = std.process.args();
+    var scriptArg: usize = 0;
+    var databaseArg: usize = 0;
+    var i: usize = 0;
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--database")) {
-            database_path = args.next().?;
-        } else if (std.mem.eql(u8, arg, "--script")) {
-            script = args.next().?;
-        } else if (std.mem.eql(u8, arg, "--debug-tokens")) {
+        if (std.mem.eql(u8, arg, "--debug-tokens")) {
             debugTokens = true;
-        } else if (std.mem.eql(u8, arg, "--debug-ast")) {
+        }
+
+        if (std.mem.eql(u8, arg, "--debug-ast")) {
             debugAST = true;
         }
-    }
 
-    if (database_path.len == 0) {
-        std.log.err("No database specified", .{});
-        return;
-    }
-    if (script.len == 0) {
-        std.log.err("No script specified", .{});
-        return;
-    }
-
-    // read script
-    const script_file = try std.fs.cwd().openFile(script, .{});
-    defer script_file.close();
-
-    const file_size = try script_file.getEndPos();
-    const script_buffer = try allocator.alloc(u8, file_size);
-    defer allocator.free(script_buffer);
-
-    _ = try script_file.readAll(script_buffer);
-
-    // lex SQL script
-    const tokens = Lex.init(script_buffer).lex(allocator);
-    // var tokens = std.ArrayList(lex.Token).init(allocator);
-    defer allocator.free(tokens);
-    if (tokens.len == 0) {
-        std.log.err("No tokens found", .{});
-        return;
-    }
-
-    // parse SQL script
-    const ast = try Parser.init(allocator).parse(tokens);
-
-    // init rocksdb
-    var kv: KV = try KV.init(allocator, database_path);
-    defer kv.deinit();
-
-    // init rocksdb
-    const db = Storage.init(allocator, kv);
-
-    // execute AST
-    const executer = Executor.init(allocator, db);
-    const resp = try executer.execute(ast);
-    // for `create table` and `insert` SQL, we print OK
-    if (resp.rows.len == 0) {
-        try stdout.print("OK\n", .{});
-        return;
-    }
-
-    // for select SQL
-    // print fields
-    try stdout.print("| ", .{});
-    for (resp.fields) |field| {
-        try stdout.print("{s}\t\t ", .{field});
-    }
-    try stdout.print("\n+", .{});
-
-    // print ----
-    for (resp.fields) |field| {
-        var fl = field.len;
-        while (fl > 0) : (fl -= 1) {
-            try stdout.print("-", .{});
+        if (std.mem.eql(u8, arg, "--database")) {
+            databaseArg = i + 1;
+            i += 1;
+            _ = args.next();
         }
-        try stdout.print("\t\t ", .{});
-    }
-    try stdout.print("\n", .{});
 
-    // print rows
-    for (resp.rows) |row| {
-        try stdout.print("| ", .{});
-        for (row) |value| {
-            try stdout.print("{s}\t\t ", .{value});
+        if (std.mem.eql(u8, arg, "--script")) {
+            scriptArg = i + 1;
+            i += 1;
+            _ = args.next();
         }
-        try stdout.print("\n", .{});
+
+        i += 1;
+    }
+
+    if (databaseArg == 0) {
+        std.debug.print("--database is a required flag. Should be a directory for data.\n", .{});
+        return;
+    }
+
+    if (scriptArg == 0) {
+        std.debug.print("--script is a required flag. Should be a file containing SQL.\n", .{});
+        return;
+    }
+    const file = try std.fs.cwd().openFileZ(std.os.argv[scriptArg], .{});
+    defer file.close();
+
+    const file_size = try file.getEndPos();
+    const prog = try allocator.alloc(u8, file_size);
+
+    _ = try file.read(prog);
+    var tokens = std.ArrayList(lex.Token).init(allocator);
+    const lexErr = lex.lex(prog, &tokens);
+    if (lexErr) |err| {
+        std.debug.print("Failed to lex: {s}", .{err});
+        return;
+    }
+
+    if (debugTokens) {
+        for (tokens.items) |token| {
+            std.debug.print("Token: {s}\n", .{token.string()});
+        }
+    }
+
+    if (tokens.items.len == 0) {
+        std.debug.print("Program is empty", .{});
+        return;
+    }
+    const var_parser = parser.Parser.init(allocator);
+    var ast: parser.AST = var_parser.parse(tokens.items) catch |err| {
+        std.debug.print("Failed to parse: {s}", .{err});
+        return;
+    };
+
+    if (debugAST) {
+        ast.print();
+    }
+
+    var db: kv.KV = undefined;
+    const dataDirectory = std.mem.span(std.os.argv[databaseArg]);
+    switch (kv.KV.open(allocator, dataDirectory)) {
+        .err => |err| {
+            std.debug.print("Failed to open database: {s}", .{err});
+            return;
+        },
+        .val => |val| db = val,
+    }
+    defer db.close();
+
+    const var_storage = storage.Storage.init(allocator, db);
+    const var_executor = executor.Executor.init(allocator, var_storage);
+    switch (var_executor.execute(ast)) {
+        .err => |err| {
+            std.debug.print("Failed to execute: {s}", .{err});
+            return;
+        },
+        .val => |val| {
+            if (val.rows.len == 0) {
+                std.debug.print("ok\n", .{});
+                return;
+            }
+
+            std.debug.print("| ", .{});
+            for (val.fields) |field| {
+                std.debug.print("{s}\t\t|", .{field});
+            }
+            std.debug.print("\n", .{});
+            std.debug.print("+ ", .{});
+            for (val.fields) |field| {
+                var fieldLen = field.len;
+                while (fieldLen > 0) {
+                    std.debug.print("=", .{});
+                    fieldLen -= 1;
+                }
+                std.debug.print("\t\t+", .{});
+            }
+            std.debug.print("\n", .{});
+
+            for (val.rows) |row| {
+                std.debug.print("| ", .{});
+                for (row) |cell| {
+                    std.debug.print("{s}\t\t|", .{cell});
+                }
+                std.debug.print("\n", .{});
+            }
+        },
     }
 }
